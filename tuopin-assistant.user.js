@@ -1,3 +1,5 @@
+// @updateURL    https://raw.githubusercontent.com/你的用户名/仓库名/main/tuopin-assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/你的用户名/仓库名/main/tuopin-assistant.user.js
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
