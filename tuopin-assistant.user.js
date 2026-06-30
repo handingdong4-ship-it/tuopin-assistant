@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.8.3
+// @version      1.8.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -52,6 +52,8 @@
     try { results = JSON.parse(GM_getValue('tuopin_publish_results', '[]')); } catch (e) {}
     // 没有任何发布记录，不渲染
     if (!results.length) return;
+    // 用户主动关闭过面板，本次任务内不再重新显示
+    if (GM_getValue('tuopin_summary_closed', '') === '1') return;
 
     var isBiaodan = location.hostname === 'biaodan.bgm.smzdm.com';
 
@@ -140,7 +142,7 @@
       panel.style.maxHeight = collapsed ? '' : '55vh';
       panel.style.overflowY = collapsed ? '' : 'auto';
       var closeBtn = document.getElementById('tuopin-summary-panel-close');
-      if (closeBtn) closeBtn.onclick = function() { panel.remove(); };
+      if (closeBtn) closeBtn.onclick = function() { GM_setValue('tuopin_summary_closed', '1'); panel.remove(); };
       var toggleBtn = document.getElementById('tuopin-summary-panel-toggle');
       if (toggleBtn) toggleBtn.onclick = function() {
         collapsed = !collapsed;
@@ -3663,6 +3665,7 @@
       GM_setValue('tuopin_publish_queue', JSON.stringify(queue));
       GM_setValue('tuopin_publish_index', 0);
       GM_setValue('tuopin_publish_results', '[]');
+      GM_setValue('tuopin_summary_closed', '');
       window.open('http://youhui.bgm.smzdm.com/add_guonei', '_blank');
     };
 
