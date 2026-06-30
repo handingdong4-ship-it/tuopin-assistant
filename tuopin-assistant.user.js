@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.9.7
+// @version      2.0.1
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -133,7 +133,7 @@
             linkId = row.articleId;
             statusText = row.isPublished ? '已发布' : '未发布';
             statusColor = row.isPublished ? '#52c41a' : '#ff4d4f';
-            showFormBtn = !!row.articleId;
+            showFormBtn = !!row.articleId && parseFloat(row.r.subsidy || '0') > 0;
           }
           var titleHtml = linkUrl
             ? '<a href="' + linkUrl + '" target="_blank" style="color:#1890ff;text-decoration:none;">' + row.title.slice(0, 24) + '</a>'
@@ -180,8 +180,11 @@
           var articleId = btn.dataset.articleId;
           var sq = [];
           try { sq = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
-          var exists = sq.some(function(s) { return String(s.articleId) === String(articleId); });
-          if (!exists) {
+          var existsIdx = -1;
+          for (var i = 0; i < sq.length; i++) {
+            if (String(sq[i].articleId) === String(articleId)) { existsIdx = i; break; }
+          }
+          if (existsIdx < 0) {
             sq.push({
               articleId: articleId,
               title: btn.dataset.title,
@@ -196,9 +199,12 @@
               gid: btn.dataset.gid,
               promoCopy: btn.dataset.promoCopy
             });
+            existsIdx = sq.length - 1;
             GM_setValue('tuopin_subsidy_queue', JSON.stringify(sq));
-            GM_setValue('tuopin_subsidy_index', 0);
           }
+          // 无论是否已在队列，都把 index 指向该商品，确保从正确位置开始
+          GM_setValue('tuopin_subsidy_index', existsIdx);
+          GM_setValue('tuopin_subsidy_saved_formid', '');
           window.onbeforeunload = null;
           location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
         };
@@ -529,12 +535,22 @@
           }
         }
 
-      // 到手价折后单价 = dealPrice ÷ qty（纯到手价，不含补贴/淘金币）
+      // 折后单价用于比价：优先从文案取"折xx元/件"，其次取"到手价"÷件数
       // 优先从用户编辑后的文案提取，确保比价用最新价格
       var qty0 = parseInt(item.manualQty || item.qty || '1') || 1;
-      var copyDealMatch0 = (item.promoCopy || '').match(/(?<![金币])到手价([\d.]+)元/);
-      var dealTotal0 = copyDealMatch0 ? parseFloat(copyDealMatch0[1]) : (parseFloat(item.dealPrice || '0') || 0);
-      var currentDealPrice = qty0 > 1 ? Math.round(dealTotal0 / qty0 * 100) / 100 : dealTotal0;
+      var copy0 = item.promoCopy || '';
+      var copyZheMatch0 = copy0.match(/(?:^|[，,])(?:折|低至)([\d.]+)元\/件/);
+      var copyDealMatch0 = copy0.match(/(?<![金币])到手价([\d.]+)元/);
+      var currentDealPrice;
+      if (copyZheMatch0) {
+        currentDealPrice = parseFloat(copyZheMatch0[1]);
+      } else if (copyDealMatch0) {
+        var dealTotal0 = parseFloat(copyDealMatch0[1]);
+        currentDealPrice = qty0 > 1 ? Math.round(dealTotal0 / qty0 * 100) / 100 : dealTotal0;
+      } else {
+        var dealTotal0 = parseFloat(item.dealPrice || '0') || 0;
+        currentDealPrice = qty0 > 1 ? Math.round(dealTotal0 / qty0 * 100) / 100 : dealTotal0;
+      }
       var decision = { action: 'continue', reason: '未找到上一篇链接' };
       if (prevLink) {
         decision = await checkPrevArticle(prevLink, currentDealPrice);
@@ -694,21 +710,17 @@
           // 订单价 = 到手价（补贴前总价）：必须在 digital_price 之后填，防止 SMZDM 页面 JS 重算覆盖
           var pagePriceEl = document.querySelector('[name="article_page_price"]');
           if (pagePriceEl) setInputValue(pagePriceEl, rawPriceForForm.toFixed(2));
-          // 淘金币到手价：直接取文案里的"淘金币到手价xx元"的值（最后一次编辑保存后的文案）
+          // 淘金币到手价：取文案里"淘金币到手价"后的折后单价
           var finalPriceEl = document.querySelector('[name="article_final_price"]');
           if (finalPriceEl) {
             var finalUnit1;
-            if (copyTjbTotalMatch) {
-              // 文案里的淘金币到手价（总价），直接用，不除件数
-              finalUnit1 = parseFloat(copyTjbTotalMatch[1]).toFixed(2);
-            } else {
-              // 文案没有淘金币到手价时，用计算值
-              var tjbAmtForm = parseFloat(item.manualTjb || item.taoJinBi || '0') || 0;
-              if (tjbAmtForm > 0) {
-                var baseForTjbForm = Math.max(0, rawPriceForForm - subsidyAmtForm);
-                var tjbFinalForm = Math.max(0, Math.round((baseForTjbForm - tjbAmtForm) * 100) / 100);
-                finalUnit1 = tjbFinalForm.toFixed(2);
-              }
+            if (copyTjbZheMatch) {
+              // 文案有"淘金币到手价xx元，折xx元/件"：直接用折后单价
+              finalUnit1 = parseFloat(copyTjbZheMatch[1]).toFixed(2);
+            } else if (copyTjbTotalMatch) {
+              // 文案只有"淘金币到手价xx元"（总价）：除以件数
+              var tjbTotal1 = parseFloat(copyTjbTotalMatch[1]);
+              finalUnit1 = qtyNum1 > 1 ? (Math.round(tjbTotal1 / qtyNum1 * 100) / 100).toFixed(2) : tjbTotal1.toFixed(2);
             }
             if (finalUnit1) setInputValue(finalPriceEl, finalUnit1);
           }
