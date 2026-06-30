@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.9.4
+// @version      1.9.7
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -719,15 +719,11 @@
       if (item.subsidy && parseFloat(item.subsidy) > 0) {
         var subsidyPoints = Math.round(parseFloat(item.subsidy) * 10);
         var priceDescText = '';
-        var tjbAmtDesc = parseFloat(item.manualTjb || '0');
-        if (tjbAmtDesc > 0) {
-          var dpDesc = parseFloat(item.dealPrice || '0');
-          var subDesc = parseFloat(item.subsidy) || 0;
-          var afterSubDesc = Math.round((dpDesc - subDesc) * 100) / 100;
-          if (afterSubDesc < 0) afterSubDesc = 0;
-          var tjbFinalDesc = Math.round((afterSubDesc - tjbAmtDesc) * 100) / 100;
-          if (tjbFinalDesc < 0) tjbFinalDesc = 0;
-          priceDescText = '淘金币到手价' + tjbFinalDesc.toFixed(2) + '元，';
+        // 从文案里提取淘金币到手价，没有则不加淘金币部分
+        var copyForDesc = item.promoCopy || '';
+        var tjbTotalMatchDesc = copyForDesc.match(/淘金币到手价([\d.]+)元/);
+        if (tjbTotalMatchDesc) {
+          priceDescText = '淘金币到手价' + tjbTotalMatchDesc[1] + '元，';
         }
         priceDescText += '返' + subsidyPoints + '值得买积分后';
         var priceDescEl = document.querySelector('[name="article_subtitle_new"]');
@@ -893,15 +889,11 @@
       if (item.subsidy && parseFloat(item.subsidy) > 0) {
         var subsidyPoints = Math.round(parseFloat(item.subsidy) * 10);
         var priceDescText = '';
-        var tjbAmt2 = parseFloat(item.manualTjb || '0');
-        if (tjbAmt2 > 0) {
-          var dp2 = parseFloat(item.dealPrice || '0');
-          var sub2 = parseFloat(item.subsidy) || 0;
-          var afterSub2 = Math.round((dp2 - sub2) * 100) / 100;
-          if (afterSub2 < 0) afterSub2 = 0;
-          var tjbFinal2 = Math.round((afterSub2 - tjbAmt2) * 100) / 100;
-          if (tjbFinal2 < 0) tjbFinal2 = 0;
-          priceDescText = '淘金币到手价' + tjbFinal2.toFixed(2) + '元，';
+        // 从文案里提取淘金币到手价，没有则不加淘金币部分
+        var copy2 = item.promoCopy || '';
+        var tjbTotalMatch2 = copy2.match(/淘金币到手价([\d.]+)元/);
+        if (tjbTotalMatch2) {
+          priceDescText = '淘金币到手价' + tjbTotalMatch2[1] + '元，';
         }
         priceDescText += '返' + subsidyPoints + '值得买积分后';
         var priceDescEl = document.querySelector('[name="article_subtitle_new"]');
@@ -1182,6 +1174,7 @@
           // 补贴队列
           var subsidyQueue = [];
           try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
+          if (!subsidyQueue.some(function(s) { return String(s.articleId) === String(prevArticleId); })) {
           subsidyQueue.push({
             articleId: prevArticleId,
             title: item.title || '',
@@ -1198,6 +1191,7 @@
             fromPrevArticle: true
           });
           GM_setValue('tuopin_subsidy_queue', JSON.stringify(subsidyQueue));
+          } // end dedup check
           smzdmLog('价格相等，已加入编辑队列+补贴队列（3日精选文章' + prevArticleId + '）');
         }
         currentIdx++;
@@ -1238,6 +1232,7 @@
           if (item.subsidy && parseFloat(item.subsidy) > 0 && p3.articleId) {
             var subsidyQueue = [];
             try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
+            if (!subsidyQueue.some(function(s) { return String(s.articleId) === String(p3.articleId); })) {
             subsidyQueue.push({
               articleId: p3.articleId,
               title: item.title || '',
@@ -1253,6 +1248,7 @@
               promoCopy: item.promoCopy || ''
             });
             GM_setValue('tuopin_subsidy_queue', JSON.stringify(subsidyQueue));
+            } // end dedup check
             smzdmLog('已加入补贴队列: 文章' + p3.articleId);
           }
         } else {
