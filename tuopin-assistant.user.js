@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.8.5
+// @version      1.9.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -76,14 +76,23 @@
 
       // 每条记录的文章id = articleId（自建）或 prevArticleId（补贴已有文章）
       var rows = res.map(function(r) {
+        var prevId = r.prevArticleId || (r.prevUrl && r.prevUrl.match(/\/p\/(\d+)/) ? r.prevUrl.match(/\/p\/(\d+)/)[1] : '');
+        // skip_3day + prevArticleId = 补贴了上一篇，视为已发布；skip_3day 无prevId = 完全停止
+        var isSkipped = (r.status === 'skip_3day' && !prevId) || r.status === 'skip_published';
+        var isPublished = r.status === 'success' || (r.status === 'skip_3day' && !!prevId);
         return {
-          articleId: r.articleId || r.prevArticleId || '',
+          articleId: r.articleId || (isPublished ? prevId : ''),
+          prevArticleId: prevId,
+          prevUrl: r.prevUrl || (prevId ? 'https://www.smzdm.com/p/' + prevId + '/' : ''),
           title: r.title || '未知商品',
-          published: r.status === 'success' || r.status === 'skip_3day' || r.status === 'skip_published',
-          subsidyDone: done.indexOf(String(r.articleId || r.prevArticleId || '')) >= 0,
+          isNew: r.status === 'success',
+          isPublished: isPublished,
+          isSkipped: isSkipped,
+          failed: r.status === 'error',
+          subsidyDone: done.indexOf(String(r.articleId || prevId || '')) >= 0,
           r: r
         };
-      }).filter(function(x) { return x.articleId; });
+      });
 
       var arrowChar = collapsed ? '▶' : '▼';
       var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (collapsed ? '0' : '8px') + ';">' +
@@ -100,22 +109,40 @@
         h += '<div style="color:#999;font-size:11px;">暂无发布记录</div>';
       } else {
         rows.forEach(function(row, i) {
-          var articleUrl = row.r.gid ? ('https://www.dataoke.com/pinfo.html?id=' + row.r.gid) : (row.r.productLink || ('https://www.smzdm.com/p/' + row.articleId + '/'));
-          // 状态文案：表单页显示 已补贴/未补贴；发布页显示 已发布/未发布
-          var statusText, statusColor, showFormBtn;
-          if (isBiaodan) {
+          var statusText, statusColor, showFormBtn, linkUrl, linkId;
+          if (row.isSkipped) {
+            linkUrl = row.prevUrl || (row.prevArticleId ? 'https://www.smzdm.com/p/' + row.prevArticleId + '/' : '');
+            linkId = row.prevArticleId;
+            statusText = '已跳过';
+            statusColor = '#999';
+            showFormBtn = false;
+          } else if (row.failed) {
+            linkUrl = '';
+            linkId = '';
+            statusText = '失败';
+            statusColor = '#ff4d4f';
+            showFormBtn = false;
+          } else if (isBiaodan) {
+            linkUrl = row.articleId ? 'https://www.smzdm.com/p/' + row.articleId + '/' : '';
+            linkId = row.articleId;
             statusText = row.subsidyDone ? '已补贴' : '未补贴';
             statusColor = row.subsidyDone ? '#52c41a' : '#faad14';
-            showFormBtn = !row.subsidyDone;
+            showFormBtn = !row.subsidyDone && !!row.articleId;
           } else {
-            statusText = row.published ? '已发布' : '未发布';
-            statusColor = row.published ? '#52c41a' : '#ff4d4f';
-            showFormBtn = true;
+            linkUrl = row.articleId ? 'https://www.smzdm.com/p/' + row.articleId + '/' : '';
+            linkId = row.articleId;
+            statusText = row.isPublished ? '已发布' : '未发布';
+            statusColor = row.isPublished ? '#52c41a' : '#ff4d4f';
+            showFormBtn = !!row.articleId;
           }
+          var titleHtml = linkUrl
+            ? '<a href="' + linkUrl + '" target="_blank" style="color:#1890ff;text-decoration:none;">' + row.title.slice(0, 24) + '</a>'
+            : '<span style="color:#666;">' + row.title.slice(0, 24) + '</span>';
           h += '<div style="padding:6px 0;border-bottom:1px solid #f0f0f0;">';
-          h += '<div style="color:#333;margin-bottom:3px;line-height:1.4;">文章' + (i + 1) + '：' +
-            '<a href="' + articleUrl + '" target="_blank" style="color:#1890ff;text-decoration:none;">' +
-            row.title.slice(0, 24) + '</a></div>';
+          h += '<div style="color:#333;margin-bottom:3px;line-height:1.4;">商品' + (i + 1) + '：' + titleHtml + '</div>';
+          if (row.isSkipped && row.r.reason) {
+            h += '<div style="color:#aaa;font-size:10px;margin-bottom:2px;">' + row.r.reason + (linkId ? '（文章' + linkId + '）' : '') + '</div>';
+          }
           h += '<div style="display:flex;align-items:center;gap:8px;">';
           h += '<span style="color:' + statusColor + ';font-weight:600;font-size:11px;">' + statusText + '</span>';
           if (showFormBtn) {
@@ -503,8 +530,10 @@
         }
 
       // 到手价折后单价 = dealPrice ÷ qty（纯到手价，不含补贴/淘金币）
-      var qty0 = parseInt(item.qty || '1') || 1;
-      var dealTotal0 = parseFloat(item.dealPrice || '0') || 0;
+      // 优先从用户编辑后的文案提取，确保比价用最新价格
+      var qty0 = parseInt(item.manualQty || item.qty || '1') || 1;
+      var copyDealMatch0 = (item.promoCopy || '').match(/(?<![金币])到手价([\d.]+)元/);
+      var dealTotal0 = copyDealMatch0 ? parseFloat(copyDealMatch0[1]) : (parseFloat(item.dealPrice || '0') || 0);
       var currentDealPrice = qty0 > 1 ? Math.round(dealTotal0 / qty0 * 100) / 100 : dealTotal0;
       var decision = { action: 'continue', reason: '未找到上一篇链接' };
       if (prevLink) {
@@ -2785,7 +2814,7 @@
     var h = '<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:8px;"><span style="font-weight:600;color:#333;">商品详情</span><span id="tuopin-detail-close" style="cursor:pointer;color:#999;font-size:18px;">&times;</span></div>';
     data.forEach(function (item, idx) {
       h += '<div style="padding:10px 0;' + (idx < data.length - 1 ? 'border-bottom:1px solid #f0f0f0;' : '') + '" data-item-idx="' + idx + '">';
-      var titleLink = item.productLink || item.orderLink || '';
+      var titleLink = ((item.gid || item.id) ? 'https://www.dataoke.com/item?id=' + (item.gid || item.id) : '') || item.productLink || item.orderLink || '';
       h += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">';
       h += '<span id="tuopin-title-display-' + idx + '" style="font-weight:600;flex:1;">' + (idx + 1) + '. ';
       if (titleLink) {
