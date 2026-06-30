@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.0.1
+// @version      2.0.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1966,7 +1966,7 @@
 
       await sleep(500);
 
-      // 21. 点击"下一步"按钮
+      // 21. 点击"下一步"按钮，并等待跳转到字段配置页
       var nextBtn = null;
       var allBtns = document.querySelectorAll('button');
       for (var nb = 0; nb < allBtns.length; nb++) {
@@ -1975,7 +1975,29 @@
       if (nextBtn) {
         nextBtn.click();
         subsidyLog('✓ 已点击下一步，等待跳转到字段配置页...');
-        // 跳转到 form_type 页后，processSubsidyQueue 会自动触发 fillSubsidyFormPage2
+        // 等待是否离开 form_name 页，最多 10s
+        var jumped = false;
+        for (var wn = 0; wn < 20; wn++) {
+          await sleep(500);
+          if (location.pathname.indexOf('form_name') < 0) { jumped = true; break; }
+        }
+        if (!jumped) {
+          // 没跳转：再点一次
+          subsidyLog('未跳转，重试点击下一步...');
+          nextBtn.click();
+          for (var wn2 = 0; wn2 < 10; wn2++) {
+            await sleep(500);
+            if (location.pathname.indexOf('form_name') < 0) { jumped = true; break; }
+          }
+        }
+        if (!jumped) {
+          subsidyLog('✗ 点击下一步后仍未跳转，请手动点击下一步');
+        } else {
+          // SPA 路由跳转成功，直接继续执行第二页
+          subsidyLog('下一步跳转成功，继续执行字段配置页...');
+          await sleep(1000);
+          await processSubsidyQueue();
+        }
       } else { subsidyLog('✗ 未找到下一步按钮'); }
     }
 
@@ -2099,7 +2121,13 @@
       location.href = '/biaodan/subsidies_list_ver3';
     }
 
+    var __subsidyRunning = false;
     async function processSubsidyQueue() {
+      if (__subsidyRunning) return;
+      __subsidyRunning = true;
+      try { await _processSubsidyQueueInner(); } finally { __subsidyRunning = false; }
+    }
+    async function _processSubsidyQueueInner() {
       var currentQueue = [];
       try { currentQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
       if (!currentQueue || currentQueue.length === 0) return;
@@ -2172,6 +2200,11 @@
             else location.href = href.indexOf('/') === 0 ? href : '/biaodan/' + href;
           } else if (!navigated) {
             subsidyLog('✗ 点击后未跳转且无链接，请手动点击新建按钮');
+          } else {
+            // SPA 路由跳转成功（不触发 load 事件），直接继续执行
+            subsidyLog('SPA 跳转成功，继续执行...');
+            await sleep(1000);
+            await processSubsidyQueue();
           }
         } else {
           subsidyLog('✗ 未找到"新建机审补贴购表单"按钮');
