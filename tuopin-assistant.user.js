@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.8.4
+// @version      1.8.5
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -100,7 +100,7 @@
         h += '<div style="color:#999;font-size:11px;">暂无发布记录</div>';
       } else {
         rows.forEach(function(row, i) {
-          var articleUrl = 'https://www.smzdm.com/p/' + row.articleId + '/';
+          var articleUrl = row.r.gid ? ('https://www.dataoke.com/pinfo.html?id=' + row.r.gid) : (row.r.productLink || ('https://www.smzdm.com/p/' + row.articleId + '/'));
           // 状态文案：表单页显示 已补贴/未补贴；发布页显示 已发布/未发布
           var statusText, statusColor, showFormBtn;
           if (isBiaodan) {
@@ -648,9 +648,6 @@
             var youhuiNumEl = document.querySelector('[name="article_youhui_num"]');
             if (youhuiNumEl) setInputValue(youhuiNumEl, String(qtyNum1));
           }
-          // 订单价 = 到手价（补贴前总价）
-          var pagePriceEl = document.querySelector('[name="article_page_price"]');
-          if (pagePriceEl) setInputValue(pagePriceEl, rawPriceForForm.toFixed(2));
           // 折后单价：有补贴用"补贴后折x元/件"，无补贴用到手"折x元/件"
           var unitPrice1;
           if (subsidyAmtForm > 0 && copySubsidyZheMatch) {
@@ -665,6 +662,9 @@
           }
           var priceEl = document.querySelector('[name="article_digital_price"]');
           if (priceEl) setInputValue(priceEl, unitPrice1);
+          // 订单价 = 到手价（补贴前总价）：必须在 digital_price 之后填，防止 SMZDM 页面 JS 重算覆盖
+          var pagePriceEl = document.querySelector('[name="article_page_price"]');
+          if (pagePriceEl) setInputValue(pagePriceEl, rawPriceForForm.toFixed(2));
           // 淘金币到手价：直接取文案里的"淘金币到手价xx元"的值（最后一次编辑保存后的文案）
           var finalPriceEl = document.querySelector('[name="article_final_price"]');
           if (finalPriceEl) {
