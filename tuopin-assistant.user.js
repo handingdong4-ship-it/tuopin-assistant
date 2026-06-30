@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.8.2
+// @version      1.8.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -56,11 +56,12 @@
     var isBiaodan = location.hostname === 'biaodan.bgm.smzdm.com';
 
     var panel = document.getElementById('tuopin-summary-panel');
+    var collapsed = false;
     if (!panel) {
       panel = document.createElement('div');
       panel.id = 'tuopin-summary-panel';
       panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);' +
-        'padding:12px 14px;width:300px;font-family:-apple-system,sans-serif;font-size:12px;max-height:55vh;overflow-y:auto;';
+        'padding:12px 14px;width:300px;font-family:-apple-system,sans-serif;font-size:12px;';
       var stack = getRightStack();
       stack.insertBefore(panel, stack.firstChild); // 始终放在最上方
     }
@@ -82,10 +83,16 @@
         };
       }).filter(function(x) { return x.articleId; });
 
-      var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
+      var arrowChar = collapsed ? '▶' : '▼';
+      var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (collapsed ? '0' : '8px') + ';">' +
+        '<div style="display:flex;align-items:center;gap:6px;">' +
+        '<button id="tuopin-summary-panel-toggle" style="border:none;background:none;cursor:pointer;color:#666;font-size:11px;line-height:1;padding:0;flex-shrink:0;">' + arrowChar + '</button>' +
         '<span style="font-weight:600;font-size:13px;color:#333;">文章汇总</span>' +
+        '</div>' +
         '<button id="tuopin-summary-panel-close" style="border:none;background:none;cursor:pointer;color:#999;font-size:16px;line-height:1;padding:0;">×</button>' +
         '</div>';
+      var bodyDisplay = collapsed ? 'none' : 'block';
+      h += '<div id="tuopin-summary-body" style="display:' + bodyDisplay + ';">';
 
       if (!rows.length) {
         h += '<div style="color:#999;font-size:11px;">暂无发布记录</div>';
@@ -128,9 +135,17 @@
           h += '</div></div>';
         });
       }
+      h += '</div>'; // close tuopin-summary-body
       panel.innerHTML = h;
+      panel.style.maxHeight = collapsed ? '' : '55vh';
+      panel.style.overflowY = collapsed ? '' : 'auto';
       var closeBtn = document.getElementById('tuopin-summary-panel-close');
       if (closeBtn) closeBtn.onclick = function() { panel.remove(); };
+      var toggleBtn = document.getElementById('tuopin-summary-panel-toggle');
+      if (toggleBtn) toggleBtn.onclick = function() {
+        collapsed = !collapsed;
+        render();
+      };
       panel.querySelectorAll('.tuopin-panel-form-btn').forEach(function(btn) {
         btn.onclick = function() {
           var articleId = btn.dataset.articleId;
