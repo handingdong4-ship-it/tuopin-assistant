@@ -1,8 +1,7 @@
-
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      1.8.0
+// @version      1.8.1
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -11,6 +10,7 @@
 // @match        *://*dataoke.com/*
 // @include      *dataoke.com*
 // @match        *://youhui.bgm.smzdm.com/add_guonei*
+// @match        *://youhui.bgm.smzdm.com/edit_youhui*
 // @match        *://biaodan.bgm.smzdm.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -31,6 +31,148 @@
 (function () {
   'use strict';
 
+  // ===== 公共：右上角堆叠容器（汇总面板在上，各页面进度面板在下）=====
+  function getRightStack() {
+    var s = document.getElementById('tuopin-rt-stack');
+    if (!s) {
+      s = document.createElement('div');
+      s.id = 'tuopin-rt-stack';
+      s.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;';
+      document.body.appendChild(s);
+    }
+    return s;
+  }
+
+  // ===== 公共：右上角汇总面板（所有 SMZDM 页面共用，表单全部完成前一直固定展示）=====
+  function buildSummaryPanel() {
+    var SMZDM_HOSTS = ['youhui.bgm.smzdm.com', 'biaodan.bgm.smzdm.com'];
+    if (SMZDM_HOSTS.indexOf(location.hostname) === -1) return;
+
+    var results = [];
+    try { results = JSON.parse(GM_getValue('tuopin_publish_results', '[]')); } catch (e) {}
+    // 没有任何发布记录，不渲染
+    if (!results.length) return;
+
+    var isBiaodan = location.hostname === 'biaodan.bgm.smzdm.com';
+
+    var panel = document.getElementById('tuopin-summary-panel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'tuopin-summary-panel';
+      panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);' +
+        'padding:12px 14px;width:300px;font-family:-apple-system,sans-serif;font-size:12px;max-height:55vh;overflow-y:auto;';
+      var stack = getRightStack();
+      stack.insertBefore(panel, stack.firstChild); // 始终放在最上方
+    }
+
+    function render() {
+      var res = [];
+      try { res = JSON.parse(GM_getValue('tuopin_publish_results', '[]')); } catch (e) {}
+      var done = [];
+      try { done = JSON.parse(GM_getValue('tuopin_subsidy_done', '[]')); } catch (e) {}
+
+      // 每条记录的文章id = articleId（自建）或 prevArticleId（补贴已有文章）
+      var rows = res.map(function(r) {
+        return {
+          articleId: r.articleId || r.prevArticleId || '',
+          title: r.title || '未知商品',
+          published: r.status === 'success' || r.status === 'skip_3day' || r.status === 'skip_published',
+          subsidyDone: done.indexOf(String(r.articleId || r.prevArticleId || '')) >= 0,
+          r: r
+        };
+      }).filter(function(x) { return x.articleId; });
+
+      var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
+        '<span style="font-weight:600;font-size:13px;color:#333;">文章汇总</span>' +
+        '<button id="tuopin-summary-panel-close" style="border:none;background:none;cursor:pointer;color:#999;font-size:16px;line-height:1;padding:0;">×</button>' +
+        '</div>';
+
+      if (!rows.length) {
+        h += '<div style="color:#999;font-size:11px;">暂无发布记录</div>';
+      } else {
+        rows.forEach(function(row, i) {
+          var articleUrl = 'https://www.smzdm.com/p/' + row.articleId + '/';
+          // 状态文案：表单页显示 已补贴/未补贴；发布页显示 已发布/未发布
+          var statusText, statusColor, showFormBtn;
+          if (isBiaodan) {
+            statusText = row.subsidyDone ? '已补贴' : '未补贴';
+            statusColor = row.subsidyDone ? '#52c41a' : '#faad14';
+            showFormBtn = !row.subsidyDone;
+          } else {
+            statusText = row.published ? '已发布' : '未发布';
+            statusColor = row.published ? '#52c41a' : '#ff4d4f';
+            showFormBtn = true;
+          }
+          h += '<div style="padding:6px 0;border-bottom:1px solid #f0f0f0;">';
+          h += '<div style="color:#333;margin-bottom:3px;line-height:1.4;">文章' + (i + 1) + '：' +
+            '<a href="' + articleUrl + '" target="_blank" style="color:#1890ff;text-decoration:none;">' +
+            row.title.slice(0, 24) + '</a></div>';
+          h += '<div style="display:flex;align-items:center;gap:8px;">';
+          h += '<span style="color:' + statusColor + ';font-weight:600;font-size:11px;">' + statusText + '</span>';
+          if (showFormBtn) {
+            var rr = row.r;
+            h += '<button class="tuopin-panel-form-btn" data-article-id="' + row.articleId + '" ' +
+              'data-title="' + (rr.title || '').replace(/"/g, '') + '" ' +
+              'data-subsidy="' + (rr.subsidy || '') + '" ' +
+              'data-deal-price="' + (rr.dealPrice || '') + '" ' +
+              'data-price="' + (rr.price || '') + '" ' +
+              'data-product-link="' + (rr.productLink || '') + '" ' +
+              'data-commission-rate="' + (rr.commissionRate || '') + '" ' +
+              'data-goods-sign="' + (rr.goodsSign || '') + '" ' +
+              'data-mall="' + (rr.mall || '') + '" ' +
+              'data-b-duan="' + (rr.bDuan || '') + '" ' +
+              'data-gid="' + (rr.gid || '') + '" ' +
+              'data-promo-copy="' + (rr.promoCopy || '').replace(/"/g, '') + '" ' +
+              'style="flex-shrink:0;padding:3px 10px;font-size:11px;background:#ff7a00;color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap;">建表单</button>';
+          }
+          h += '</div></div>';
+        });
+      }
+      panel.innerHTML = h;
+      var closeBtn = document.getElementById('tuopin-summary-panel-close');
+      if (closeBtn) closeBtn.onclick = function() { panel.remove(); };
+      panel.querySelectorAll('.tuopin-panel-form-btn').forEach(function(btn) {
+        btn.onclick = function() {
+          var articleId = btn.dataset.articleId;
+          var sq = [];
+          try { sq = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
+          var exists = sq.some(function(s) { return String(s.articleId) === String(articleId); });
+          if (!exists) {
+            sq.push({
+              articleId: articleId,
+              title: btn.dataset.title,
+              productLink: btn.dataset.productLink,
+              price: btn.dataset.price,
+              dealPrice: btn.dataset.dealPrice,
+              subsidy: btn.dataset.subsidy,
+              commissionRate: btn.dataset.commissionRate,
+              goodsSign: btn.dataset.goodsSign,
+              mall: btn.dataset.mall,
+              bDuan: btn.dataset.bDuan,
+              gid: btn.dataset.gid,
+              promoCopy: btn.dataset.promoCopy
+            });
+            GM_setValue('tuopin_subsidy_queue', JSON.stringify(sq));
+            GM_setValue('tuopin_subsidy_index', 0);
+          }
+          window.onbeforeunload = null;
+          location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+        };
+      });
+    }
+
+    render();
+    // 暴露 render 供外部刷新状态
+    window.__tuopinRenderSummary = render;
+  }
+
+  // 页面加载完成后渲染汇总面板
+  if (document.readyState === 'complete') {
+    buildSummaryPanel();
+  } else {
+    window.addEventListener('load', buildSummaryPanel);
+  }
+
   // ===== SMZDM 自动发布逻辑 =====
   if (location.hostname === 'youhui.bgm.smzdm.com' && location.pathname.includes('add_guonei')) {
     var queueStr = GM_getValue('tuopin_publish_queue', '[]');
@@ -49,16 +191,17 @@
     }
 
     function createStatusPanel() {
+      if (document.getElementById('tuopin-smzdm-panel')) return;
       var panel = document.createElement('div');
       panel.id = 'tuopin-smzdm-panel';
-      panel.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:320px;font-family:-apple-system,sans-serif;font-size:13px;';
+      panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:320px;font-family:-apple-system,sans-serif;font-size:13px;';
       panel.innerHTML = '<div style="font-weight:600;font-size:15px;margin-bottom:8px;color:#333;">拓品自动发布</div>' +
         '<div id="tuopin-smzdm-progress" style="color:#1890ff;margin-bottom:6px;">准备中...</div>' +
         '<div id="tuopin-smzdm-log" style="max-height:200px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:8px;font-size:11px;line-height:1.6;color:#666;"></div>' +
         '<div style="margin-top:8px;display:flex;gap:6px;">' +
         '<button id="tuopin-smzdm-stop" style="padding:4px 12px;border:1px solid #ff4d4f;border-radius:4px;background:#fff;color:#ff4d4f;cursor:pointer;font-size:12px;">停止</button>' +
         '</div>';
-      document.body.appendChild(panel);
+      getRightStack().appendChild(panel);
       document.getElementById('tuopin-smzdm-stop').onclick = function () {
         GM_setValue('tuopin_publish_queue', '[]');
         smzdmLog('已停止');
@@ -128,6 +271,20 @@
         var b = document.querySelector(sels[s]);
         if (b && b.offsetParent !== null) { b.click(); return sels[s]; }
       }
+      // Element UI el-dialog 弹窗（如"提示信息 - 点击同步会将此条消息再次更新..."）
+      var elDialogs = document.querySelectorAll('.el-dialog__wrapper, .el-message-box__wrapper');
+      for (var d = 0; d < elDialogs.length; d++) {
+        if (elDialogs[d].style.display === 'none' || elDialogs[d].style.visibility === 'hidden') continue;
+        var confirmBtn = elDialogs[d].querySelector('.el-button--primary, .el-message-box__btns .el-button--primary');
+        if (confirmBtn && confirmBtn.offsetParent !== null) { confirmBtn.click(); return 'el-confirm'; }
+        // 兜底：找文字为"确定"的按钮
+        var allBtns = elDialogs[d].querySelectorAll('button');
+        for (var bi = 0; bi < allBtns.length; bi++) {
+          if ((allBtns[bi].textContent || '').trim() === '确定' && allBtns[bi].offsetParent !== null) {
+            allBtns[bi].click(); return 'el-ok';
+          }
+        }
+      }
       var inputs = document.querySelectorAll('input[value="确定"], input[value="确认"], button');
       for (var i = 0; i < inputs.length; i++) {
         var t = inputs[i].value || inputs[i].textContent.trim();
@@ -184,6 +341,9 @@
                 result.tags.push(labelText);
               }
             }
+            // 过期/售罄检测（匹配 SMZDM 常见状态标记）
+            result.isExpired = /已过期|已失效|已结束|商品下架|price-state-expired|status-expired|链接失效/.test(html);
+            result.isSoldOut = /已售罄|price-state-soldout|status-soldout/.test(html);
             resolve(result);
           },
           onerror: function() { resolve(null); },
@@ -192,10 +352,24 @@
       });
     }
 
-    async function checkPrevArticle(prevUrl, currentPrice) {
+    async function checkPrevArticle(prevUrl, currentDealPrice) {
       var info = await fetchPrevArticleInfo(prevUrl);
       if (!info) return { action: 'continue', reason: '无法获取上一篇信息，默认继续' };
 
+      // 1. 已过期/已失效/已售罄 → 直接自建
+      if (info.isExpired) {
+        return { action: 'continue', reason: '上一篇已过期/已失效，直接自建' };
+      }
+      if (info.isSoldOut) {
+        return { action: 'continue', reason: '上一篇已售罄，直接自建' };
+      }
+
+      // 2. 小小值发布 → 直接自建（不管价格）
+      if (info.author && info.author.indexOf('小小值') !== -1) {
+        return { action: 'continue', reason: '上一篇为小小值发布，直接自建' };
+      }
+
+      // 3. 特殊标签 → 跳过
       var skipTags = ['绝对值', '手慢无', '白菜党', '抄作业'];
       for (var i = 0; i < info.tags.length; i++) {
         for (var j = 0; j < skipTags.length; j++) {
@@ -205,12 +379,14 @@
         }
       }
 
-      if (info.price > 0 && currentPrice > 0 && info.price <= currentPrice) {
-        return { action: 'skip', reason: '上一篇到手价' + info.price + '元≤当前' + currentPrice + '元' };
-      }
-
-      if (info.author && info.author.indexOf('小小值') !== -1) {
-        return { action: 'continue', reason: '上一篇为小小值发布，覆盖' };
+      // 4. 价格比较
+      if (info.price > 0 && currentDealPrice > 0) {
+        if (info.price < currentDealPrice) {
+          return { action: 'skip', reason: '上一篇到手价' + info.price + '元<当前' + currentDealPrice + '元' };
+        } else if (info.price === currentDealPrice) {
+          // 价格相等：跳过自建，记录3日精选文章id，补贴表单用该文章链接
+          return { action: 'skip', reason: '上一篇到手价' + info.price + '元=当前' + currentDealPrice + '元，用3日精选文章创建补贴', equalPrice: true };
+        }
       }
 
       return { action: 'continue', reason: '上一篇价格更高(' + info.price + '元)且无特殊标签' };
@@ -309,39 +485,59 @@
           }
         }
 
-        var currentPrice = parseFloat(item.price || '0');
-        var decision = { action: 'continue', reason: '未找到上一篇链接' };
-        if (prevLink) {
-          decision = await checkPrevArticle(prevLink, currentPrice);
-          smzdmLog('上一篇判断: ' + decision.reason);
-        } else {
-          smzdmLog('未找到上一篇链接，默认继续');
-        }
+      // 到手价折后单价 = dealPrice ÷ qty（纯到手价，不含补贴/淘金币）
+      var qty0 = parseInt(item.qty || '1') || 1;
+      var dealTotal0 = parseFloat(item.dealPrice || '0') || 0;
+      var currentDealPrice = qty0 > 1 ? Math.round(dealTotal0 / qty0 * 100) / 100 : dealTotal0;
+      var decision = { action: 'continue', reason: '未找到上一篇链接' };
+      if (prevLink) {
+        decision = await checkPrevArticle(prevLink, currentDealPrice);
+        smzdmLog('上一篇判断: ' + decision.reason);
+      } else {
+        smzdmLog('未找到上一篇链接，默认继续');
+      }
 
-        if (decision.action === 'skip') {
-          // 点取消跳过
-          var cancelBtns = document.querySelectorAll('.boxy-btn2, input[value="取消"], button');
-          for (var i = 0; i < cancelBtns.length; i++) {
-            var t = cancelBtns[i].textContent.trim() || cancelBtns[i].value || '';
-            if (cancelBtns[i].offsetParent !== null && t === '取消') { cancelBtns[i].click(); break; }
-          }
-          return { status: 'skip_3day', reason: decision.reason, prevUrl: prevLink };
-        } else {
-          // 点确认继续自建
-          var confirmBtns = document.querySelectorAll('.boxy-btn1, input[value="确认"]');
-          for (var i = 0; i < confirmBtns.length; i++) {
-            if (confirmBtns[i].offsetParent !== null) { confirmBtns[i].click(); break; }
-          }
-          smzdmLog('点击确认，继续自建');
-          // 等待后端重新获取商品数据 + 百科弹窗出现
-          for (var rw = 0; rw < 12; rw++) {
-            var wb = document.querySelector('.window-body');
-            if (wb && wb.offsetParent !== null) break;
-            var titleEl = document.querySelector('[name="article_title"]');
-            if (titleEl && titleEl.value) break;
-            await sleep(400);
-          }
+      var subsidyExistingMode = GM_getValue('tuopin_subsidy_existing', 'no');
+      // 仅"价格相等(情况6)"且开关=是时，跳过自建并补贴已有文章。
+      // 价格相等(情况6)且开关=否时 → 走自建。
+      // 特殊标签(情况4)、上一篇价格更低(情况5) → 完全停止：不自建、不补贴。
+      var skipForSubsidy = subsidyExistingMode === 'yes' && decision.equalPrice === true && prevLink;
+
+      function clickCancel() {
+        var btns = document.querySelectorAll('.boxy-btn2, input[value="取消"], button');
+        for (var i = 0; i < btns.length; i++) {
+          var t = (btns[i].textContent || '').trim() || btns[i].value || '';
+          if (btns[i].offsetParent !== null && t === '取消') { btns[i].click(); return; }
         }
+      }
+
+      if (skipForSubsidy) {
+        // 情况6(价格相等)且开关=是：点取消，跳过自建，补贴已有文章
+        clickCancel();
+        var prevIdMatch = prevLink.match(/\/p\/(\d+)/);
+        var prevArticleId = prevIdMatch ? prevIdMatch[1] : '';
+        return { status: 'skip_3day', reason: decision.reason, prevUrl: prevLink, equalPrice: true, prevArticleId: prevArticleId };
+      } else if (decision.action === 'skip' && !decision.equalPrice) {
+        // 情况4(特殊标签)/情况5(价格更低)：完全停止，点取消，不自建也不补贴
+        clickCancel();
+        return { status: 'skip_3day', reason: decision.reason, prevUrl: prevLink };
+      } else {
+        // 情况6(价格相等)且开关=否，或情况7(价格更高/小小值/过期售罄)：点确认继续自建
+        // action=continue（过期/售罄/小小值/价格更高）或模式=否：点确认继续自建
+        var confirmBtns = document.querySelectorAll('.boxy-btn1, input[value="确认"]');
+        for (var i = 0; i < confirmBtns.length; i++) {
+          if (confirmBtns[i].offsetParent !== null) { confirmBtns[i].click(); break; }
+        }
+        smzdmLog('点击确认，继续自建');
+        // 等待后端重新获取商品数据 + 百科弹窗出现
+        for (var rw = 0; rw < 12; rw++) {
+          var wb = document.querySelector('.window-body');
+          if (wb && wb.offsetParent !== null) break;
+          var titleEl = document.querySelector('[name="article_title"]');
+          if (titleEl && titleEl.value) break;
+          await sleep(400);
+        }
+      }
       }
 
       // 百科弹窗处理（"复用历史精选内容与关联百科"）—— 必须在 dismissAllPopups 之前
@@ -416,44 +612,76 @@
         if (titleEl) setInputValue(titleEl, item.title);
       }
 
-      // 折后单价 = 补贴后价格 ÷ 件数（每件价格）
-      if (item.price) {
-        var rawPrice = parseFloat(item.price.replace('元', '')) || 0;
+      // 价格优先从文案解析（用户编辑后的文案是最终准确价格）
+      {
+        var copy1 = item.promoCopy || '';
+        var copyDealMatch = copy1.match(/(?<![金币])到手价([\d.]+)元/);
+        // 折后单价：有补贴优先取"补贴后折x元/件"，否则取"折/低至x元/件"（到手折后单价）
+        var copySubsidyZheMatch = copy1.match(/补贴后折([\d.]+)元\/件/);
+        var copyDealZheMatch = copy1.match(/(?:^|[，,])(?:折|低至)([\d.]+)元\/件/);
+        var copyTjbTotalMatch = copy1.match(/淘金币到手价([\d.]+)元/);
+        var copyTjbZheMatch = copy1.match(/淘金币到手价[\d.]+元[，,]?(?:折|低至|补贴后折)([\d.]+)元\/件/); // 淘金币后单价
+        // 到手价（补贴前总价）：文案 > item.dealPrice > item.price
+        var rawPriceForForm = copyDealMatch ? parseFloat(copyDealMatch[1]) : (parseFloat(item.dealPrice || item.price || '0') || 0);
         var qtyNum1 = parseInt(item.manualQty || item.qty || (item.divisor && parseInt(item.divisor) > 1 ? item.divisor : '') || '1') || 1;
-        var unitPrice1 = qtyNum1 > 1 ? (Math.round(rawPrice / qtyNum1 * 100) / 100).toFixed(2) : rawPrice.toFixed(2);
-        var priceEl = document.querySelector('[name="article_digital_price"]');
-        if (priceEl) setInputValue(priceEl, unitPrice1);
-        // 淘金币价格 = 淘金币到手价 ÷ 件数
-        var tjbAmt0 = parseFloat(item.manualTjb || item.taoJinBi || '0') || 0;
-        if (tjbAmt0 > 0) {
-          var tjbTotal = Math.max(0, rawPrice - tjbAmt0);
-          var tjbUnit = qtyNum1 > 1 ? (Math.round(tjbTotal / qtyNum1 * 100) / 100).toFixed(2) : tjbTotal.toFixed(2);
+        var subsidyAmtForm = parseFloat(item.subsidy || '0') || 0;
+        if (rawPriceForForm > 0) {
+          // 件数
+          if (qtyNum1 > 1) {
+            var youhuiNumEl = document.querySelector('[name="article_youhui_num"]');
+            if (youhuiNumEl) setInputValue(youhuiNumEl, String(qtyNum1));
+          }
+          // 订单价 = 到手价（补贴前总价）
+          var pagePriceEl = document.querySelector('[name="article_page_price"]');
+          if (pagePriceEl) setInputValue(pagePriceEl, rawPriceForForm.toFixed(2));
+          // 折后单价：有补贴用"补贴后折x元/件"，无补贴用到手"折x元/件"
+          var unitPrice1;
+          if (subsidyAmtForm > 0 && copySubsidyZheMatch) {
+            unitPrice1 = parseFloat(copySubsidyZheMatch[1]).toFixed(2);
+          } else if (copyDealZheMatch) {
+            unitPrice1 = parseFloat(copyDealZheMatch[1]).toFixed(2);
+          } else if (subsidyAmtForm > 0) {
+            var afterSub1 = Math.max(0, Math.round((rawPriceForForm - subsidyAmtForm) * 100) / 100);
+            unitPrice1 = qtyNum1 > 1 ? (Math.round(afterSub1 / qtyNum1 * 100) / 100).toFixed(2) : afterSub1.toFixed(2);
+          } else {
+            unitPrice1 = qtyNum1 > 1 ? (Math.round(rawPriceForForm / qtyNum1 * 100) / 100).toFixed(2) : rawPriceForForm.toFixed(2);
+          }
+          var priceEl = document.querySelector('[name="article_digital_price"]');
+          if (priceEl) setInputValue(priceEl, unitPrice1);
+          // 淘金币到手价：直接取文案里的"淘金币到手价xx元"的值（最后一次编辑保存后的文案）
           var finalPriceEl = document.querySelector('[name="article_final_price"]');
-          if (finalPriceEl) setInputValue(finalPriceEl, tjbUnit);
-        }
-        // 订单价 = 优惠券后到手总价（补贴和淘金币前）
-        var pagePriceEl = document.querySelector('[name="article_page_price"]');
-        if (pagePriceEl) setInputValue(pagePriceEl, rawPrice.toFixed(2));
-        // 件数字段（标题旁边的数字）
-        if (qtyNum1 > 1) {
-          var youhuiNumEl = document.querySelector('[name="article_youhui_num"]');
-          if (youhuiNumEl) setInputValue(youhuiNumEl, String(qtyNum1));
+          if (finalPriceEl) {
+            var finalUnit1;
+            if (copyTjbTotalMatch) {
+              // 文案里的淘金币到手价（总价），直接用，不除件数
+              finalUnit1 = parseFloat(copyTjbTotalMatch[1]).toFixed(2);
+            } else {
+              // 文案没有淘金币到手价时，用计算值
+              var tjbAmtForm = parseFloat(item.manualTjb || item.taoJinBi || '0') || 0;
+              if (tjbAmtForm > 0) {
+                var baseForTjbForm = Math.max(0, rawPriceForForm - subsidyAmtForm);
+                var tjbFinalForm = Math.max(0, Math.round((baseForTjbForm - tjbAmtForm) * 100) / 100);
+                finalUnit1 = tjbFinalForm.toFixed(2);
+              }
+            }
+            if (finalUnit1) setInputValue(finalPriceEl, finalUnit1);
+          }
         }
       }
 
-      // (新)价格优惠描述：有补贴时填 "淘金币到手价xx元，返xx值得买积分后"（有淘金币时加前缀）
+      // (新)价格优惠描述：有补贴时填 "淘金币到手价xx元，返xx值得买积分后"
       if (item.subsidy && parseFloat(item.subsidy) > 0) {
         var subsidyPoints = Math.round(parseFloat(item.subsidy) * 10);
         var priceDescText = '';
-        var tjbAmt = parseFloat(item.manualTjb || '0');
-        if (tjbAmt > 0) {
-          var dp = parseFloat(item.dealPrice || '0');
-          var sub = parseFloat(item.subsidy) || 0;
-          var afterSub = Math.round((dp - sub) * 100) / 100;
-          if (afterSub < 0) afterSub = 0;
-          var tjbFinal = Math.round((afterSub - tjbAmt) * 100) / 100;
-          if (tjbFinal < 0) tjbFinal = 0;
-          priceDescText = '淘金币到手价' + tjbFinal.toFixed(2) + '元，';
+        var tjbAmtDesc = parseFloat(item.manualTjb || '0');
+        if (tjbAmtDesc > 0) {
+          var dpDesc = parseFloat(item.dealPrice || '0');
+          var subDesc = parseFloat(item.subsidy) || 0;
+          var afterSubDesc = Math.round((dpDesc - subDesc) * 100) / 100;
+          if (afterSubDesc < 0) afterSubDesc = 0;
+          var tjbFinalDesc = Math.round((afterSubDesc - tjbAmtDesc) * 100) / 100;
+          if (tjbFinalDesc < 0) tjbFinalDesc = 0;
+          priceDescText = '淘金币到手价' + tjbFinalDesc.toFixed(2) + '元，';
         }
         priceDescText += '返' + subsidyPoints + '值得买积分后';
         var priceDescEl = document.querySelector('[name="article_subtitle_new"]');
@@ -463,14 +691,22 @@
         }
       }
 
-      // 优惠力度 → UEditor（优先用 promoCopy 完整文案）
+      // 优惠力度 → UEditor（完整文案，补贴句加红色）
       var copyText = item.promoCopy || item.youhuiText;
       if (copyText) {
         try {
           if (typeof UE !== 'undefined' && UE.instants && UE.instants.ueditorInstant0) {
-            // 补贴部分加粗加红：从"返xx值得买积分"到末尾
-            var htmlCopy = copyText.replace(/(返\d+值得买积分.*)$/, '<strong style="color:red">$1</strong>');
-            UE.instants.ueditorInstant0.setContent('<p>' + htmlCopy + '</p>');
+            var subsidyMatchUE = copyText.match(/(返\d+值得买积分[，,]?补贴后低至[\d.]+元[^，,。\s]*)/);
+            var uContent;
+            if (subsidyMatchUE) {
+              var sidx = copyText.indexOf(subsidyMatchUE[1]);
+              uContent = '<p>' + copyText.slice(0, sidx) +
+                '<strong style="color:red">' + subsidyMatchUE[1] + '</strong>' +
+                copyText.slice(sidx + subsidyMatchUE[1].length) + '</p>';
+            } else {
+              uContent = '<p>' + copyText + '</p>';
+            }
+            UE.instants.ueditorInstant0.setContent(uContent);
             UE.instants.ueditorInstant0.sync();
           }
         } catch (e) { smzdmLog('UEditor写入失败: ' + e.message); }
@@ -594,10 +830,17 @@
         if (titleEl) setInputValue(titleEl, item.title);
       }
 
-      // 折后单价
-      if (item.price) {
+      // 折后单价 = 纯到手价 ÷ 件数（补贴前），从 item.price(已是折后单价) 或 dealPrice/qty 反推
+      var dpPrice = parseFloat((item.price || '0').replace('元', '')) || 0;
+      if (dpPrice <= 0 && item.dealPrice) {
+        var dpTotal = parseFloat(item.dealPrice) || 0;
+        var dpQty = parseInt(item.qty) || 1;
+        if (dpQty > 1) dpPrice = Math.round(dpTotal / dpQty * 100) / 100;
+        else dpPrice = dpTotal;
+      }
+      if (dpPrice > 0) {
         var priceEl = document.querySelector('[name="article_digital_price"]');
-        if (priceEl) setInputValue(priceEl, item.price);
+        if (priceEl) setInputValue(priceEl, dpPrice.toFixed(2));
       }
 
       // (新)价格优惠描述：有补贴时填 "淘金币到手价xx元，返xx值得买积分后"（有淘金币时加前缀）
@@ -619,14 +862,22 @@
         if (priceDescEl) setInputValue(priceDescEl, priceDescText);
       }
 
-      // 优惠力度 → UEditor（优先用 promoCopy 完整文案）
+      // 优惠力度 → UEditor（完整文案，补贴句加红色）
       var copyText = item.promoCopy || item.youhuiText;
       if (copyText) {
         try {
           if (typeof UE !== 'undefined' && UE.instants && UE.instants.ueditorInstant0) {
-            // 补贴部分加粗加红：从"返xx值得买积分"到末尾
-            var htmlCopy = copyText.replace(/(返\d+值得买积分.*)$/, '<strong style="color:red">$1</strong>');
-            UE.instants.ueditorInstant0.setContent('<p>' + htmlCopy + '</p>');
+            var subsidyMatchUE = copyText.match(/(返\d+值得买积分[，,]?补贴后低至[\d.]+元[^，,。\s]*)/);
+            var uContent;
+            if (subsidyMatchUE) {
+              var sidx = copyText.indexOf(subsidyMatchUE[1]);
+              uContent = '<p>' + copyText.slice(0, sidx) +
+                '<strong style="color:red">' + subsidyMatchUE[1] + '</strong>' +
+                copyText.slice(sidx + subsidyMatchUE[1].length) + '</p>';
+            } else {
+              uContent = '<p>' + copyText + '</p>';
+            }
+            UE.instants.ueditorInstant0.setContent(uContent);
             UE.instants.ueditorInstant0.sync();
           }
         } catch (e) { smzdmLog('UEditor写入失败: ' + e.message); }
@@ -768,6 +1019,50 @@
       }
     }
 
+    // 商品唯一标识：优先 gid，其次从链接里提取商品 id，最后用链接本身
+    function getItemKey(item) {
+      if (item.gid && String(item.gid).length >= 6) return 'g' + item.gid;
+      var link = item.productLink || item.orderLink || '';
+      var m = link.match(/[?&]id=(\d+)/) || link.match(/\/item[\/.](\d+)/);
+      if (m) return 'i' + m[1];
+      return link ? 'l' + link.slice(0, 120) : '';
+    }
+
+    // 已自建过的商品历史（保留2天，2天内重复直接跳过自建）
+    var PUBLISHED_TTL = 2 * 24 * 60 * 60 * 1000; // 2天
+    function loadPublishedHistory() {
+      var hist = [];
+      try { hist = JSON.parse(GM_getValue('tuopin_published_history', '[]')); } catch (e) { hist = []; }
+      // 清理超过2天的记录
+      var now = Date.now();
+      var kept = hist.filter(function(h) { return h.time && (now - h.time) < PUBLISHED_TTL; });
+      if (kept.length !== hist.length) GM_setValue('tuopin_published_history', JSON.stringify(kept));
+      return kept;
+    }
+    function findPublishedHistory(key) {
+      if (!key) return null;
+      var now = Date.now();
+      var hist = loadPublishedHistory();
+      for (var i = 0; i < hist.length; i++) {
+        // 仅认 2 天内的记录
+        if (hist[i].key === key && hist[i].time && (now - hist[i].time) < PUBLISHED_TTL) return hist[i];
+      }
+      return null;
+    }
+    function addPublishedHistory(key, articleId, title) {
+      if (!key) return;
+      var hist = loadPublishedHistory();
+      // 去重：已存在则更新 articleId 和时间
+      for (var i = 0; i < hist.length; i++) {
+        if (hist[i].key === key) {
+          hist[i].articleId = articleId; hist[i].title = title; hist[i].time = Date.now();
+          return GM_setValue('tuopin_published_history', JSON.stringify(hist));
+        }
+      }
+      hist.push({ key: key, articleId: articleId, title: title, time: Date.now() });
+      GM_setValue('tuopin_published_history', JSON.stringify(hist));
+    }
+
     async function processQueue() {
       createStatusPanel();
       var currentIdx = GM_getValue('tuopin_publish_index', 0);
@@ -780,6 +1075,36 @@
       smzdmLog('========== 第 ' + (currentIdx + 1) + '/' + total + ' 个 ==========');
       smzdmLog('商品: ' + (item.title || '未知'));
 
+      // 已自建过的商品 → 跳过，不重复发布（用历史里的文章id写入结果，汇总仍可建表单）
+      var itemKey = getItemKey(item);
+      var histHit = findPublishedHistory(itemKey);
+      if (histHit) {
+        smzdmLog('该商品已自建过（文章' + (histHit.articleId || '?') + '），跳过');
+        results.push({
+          title: item.title || histHit.title || '', status: 'skip_published',
+          reason: '已自建过', articleId: histHit.articleId || '',
+          subsidy: item.subsidy || '', dealPrice: item.dealPrice || '', price: item.price || '',
+          productLink: item.productLink || '', commissionRate: item.commissionRate || item.commission_rate || '',
+          goodsSign: item.goodsSign || '', mall: item.mall || '', bDuan: item.bDuan || '',
+          gid: item.gid || '', promoCopy: item.promoCopy || ''
+        });
+        GM_setValue('tuopin_publish_results', JSON.stringify(results));
+        currentIdx++;
+        GM_setValue('tuopin_publish_index', currentIdx);
+        if (currentIdx < total) {
+          await sleep(500);
+          window.onbeforeunload = null;
+          location.href = 'http://youhui.bgm.smzdm.com/add_guonei';
+          return;
+        }
+        // 是最后一个 → 落到末尾汇总逻辑
+        showResultsSummary(results, total);
+        GM_setValue('tuopin_publish_queue', '[]');
+        GM_setValue('tuopin_publish_index', 0);
+        GM_setValue('tuopin_subsidy_done', '[]');
+        return;
+      }
+
       await sleep(500);
       var p1 = await runPhase1(item);
 
@@ -787,8 +1112,48 @@
         var skipReason = (p1 && p1.reason) ? p1.reason : '3天内已发布过';
         var prevUrl = (p1 && p1.prevUrl) ? p1.prevUrl : '';
         smzdmLog('跳过: ' + skipReason);
-        results.push({ title: item.title || '', status: 'skip_3day', reason: skipReason, prevUrl: prevUrl });
+        // 价格相等时，用3日精选文章id创建补贴表单（用该文章链接）
+        var equalPrice = (p1 && p1.equalPrice) ? true : false;
+        var prevArticleId = (p1 && p1.prevArticleId) ? p1.prevArticleId : '';
+        results.push({ title: item.title || '', status: 'skip_3day', reason: skipReason, prevUrl: prevUrl, equalPrice: equalPrice, prevArticleId: prevArticleId });
         GM_setValue('tuopin_publish_results', JSON.stringify(results));
+        // 价格相等且有补贴：先加入编辑队列（去修改3日精选文章），再加入补贴队列
+        if (equalPrice && prevArticleId && item.subsidy && parseFloat(item.subsidy) > 0) {
+          // 编辑队列：跳到3日精选文章编辑页，更新到手价/优惠力度/价格优惠/标签
+          var editQueue = [];
+          try { editQueue = JSON.parse(GM_getValue('tuopin_edit_queue', '[]')); } catch (e) { editQueue = []; }
+          editQueue.push({
+            articleId: prevArticleId,
+            title: item.title || '',
+            price: item.price || '',
+            dealPrice: item.dealPrice || item.price || '',
+            subsidy: item.subsidy,
+            promoCopy: item.promoCopy || '',
+            manualTjb: item.manualTjb || '',
+            taoJinBi: item.taoJinBi || ''
+          });
+          GM_setValue('tuopin_edit_queue', JSON.stringify(editQueue));
+          // 补贴队列
+          var subsidyQueue = [];
+          try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
+          subsidyQueue.push({
+            articleId: prevArticleId,
+            title: item.title || '',
+            productLink: item.productLink || '',
+            price: item.price || '',
+            dealPrice: item.dealPrice || item.price || '',
+            subsidy: item.subsidy,
+            commissionRate: item.commissionRate || item.commission_rate || '',
+            goodsSign: item.goodsSign || '',
+            mall: item.mall || '',
+            bDuan: item.bDuan || '',
+            gid: item.gid || '',
+            promoCopy: item.promoCopy || '',
+            fromPrevArticle: true
+          });
+          GM_setValue('tuopin_subsidy_queue', JSON.stringify(subsidyQueue));
+          smzdmLog('价格相等，已加入编辑队列+补贴队列（3日精选文章' + prevArticleId + '）');
+        }
         currentIdx++;
         GM_setValue('tuopin_publish_index', currentIdx);
         if (currentIdx < total) {
@@ -815,8 +1180,15 @@
         var p3 = await runPhase3();
 
         if (p3.status === 'success') {
-          results.push({ title: item.title || '', status: 'success', reason: '', articleId: p3.articleId || '' });
+          results.push({ title: item.title || '', status: 'success', reason: '', articleId: p3.articleId || '',
+            subsidy: item.subsidy || '', dealPrice: item.dealPrice || '', price: item.price || '',
+            productLink: item.productLink || '', commissionRate: item.commissionRate || '',
+            goodsSign: item.goodsSign || '', mall: item.mall || '', bDuan: item.bDuan || '',
+            gid: item.gid || '', promoCopy: item.promoCopy || '' });
+          // 记入已自建历史，下次遇到同款直接跳过
+          addPublishedHistory(itemKey, p3.articleId || '', item.title || '');
           // 如果有补贴，加入补贴队列
+          smzdmLog('补贴检查: subsidy=' + (item.subsidy || '空') + ' articleId=' + p3.articleId);
           if (item.subsidy && parseFloat(item.subsidy) > 0 && p3.articleId) {
             var subsidyQueue = [];
             try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
@@ -831,7 +1203,8 @@
               goodsSign: item.goodsSign || '',
               mall: item.mall || '',
               bDuan: item.bDuan || '',
-              gid: item.gid || ''
+              gid: item.gid || '',
+              promoCopy: item.promoCopy || ''
             });
             GM_setValue('tuopin_subsidy_queue', JSON.stringify(subsidyQueue));
             smzdmLog('已加入补贴队列: 文章' + p3.articleId);
@@ -857,10 +1230,38 @@
       showResultsSummary(results, total);
       GM_setValue('tuopin_publish_queue', '[]');
       GM_setValue('tuopin_publish_index', 0);
-      GM_setValue('tuopin_publish_results', '[]');
-      // 如果有补贴队列，跳转到补贴表单页面
+      // 注意：不清空 tuopin_publish_results —— 汇总面板要在补贴表单页持续展示，
+      // 直到补贴表单全部创建完成后再统一清理。
+      GM_setValue('tuopin_subsidy_done', '[]');
+      // 如果有编辑队列（3日同价文章），只保留 articleId 最大（最近）的一篇
+      var pendingEdit = [];
+      try { pendingEdit = JSON.parse(GM_getValue('tuopin_edit_queue', '[]')); } catch (e) {}
+      if (pendingEdit.length > 1) {
+        pendingEdit.sort(function(a, b) { return parseInt(b.articleId) - parseInt(a.articleId); });
+        pendingEdit = [pendingEdit[0]];
+        GM_setValue('tuopin_edit_queue', JSON.stringify(pendingEdit));
+      }
+      // 补贴队列同样只保留最近一篇（fromPrevArticle 的）
       var pendingSubsidy = [];
       try { pendingSubsidy = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
+      var prevSubsidies = pendingSubsidy.filter(function(s) { return s.fromPrevArticle; });
+      var normalSubsidies = pendingSubsidy.filter(function(s) { return !s.fromPrevArticle; });
+      if (prevSubsidies.length > 1) {
+        prevSubsidies.sort(function(a, b) { return parseInt(b.articleId) - parseInt(a.articleId); });
+        prevSubsidies = [prevSubsidies[0]];
+      }
+      pendingSubsidy = normalSubsidies.concat(prevSubsidies);
+      GM_setValue('tuopin_subsidy_queue', JSON.stringify(pendingSubsidy));
+
+      if (pendingEdit.length > 0) {
+        GM_setValue('tuopin_edit_index', 0);
+        smzdmLog('有编辑任务，3秒后跳转到最近文章 ' + pendingEdit[0].articleId + '...');
+        await sleep(3000);
+        window.onbeforeunload = null;
+        location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + pendingEdit[0].articleId;
+        return;
+      }
+      // 如果有补贴队列，跳转到补贴表单页面
       if (pendingSubsidy.length > 0) {
         smzdmLog('有 ' + pendingSubsidy.length + ' 个补贴待创建，3秒后跳转...');
         await sleep(3000);
@@ -872,9 +1273,8 @@
     function showResultsSummary(results, total) {
       var successCount = 0;
       var failList = [];
-      var successList = [];
       results.forEach(function (r) {
-        if (r.status === 'success') { successCount++; successList.push(r); }
+        if (r.status === 'success') successCount++;
         else failList.push(r);
       });
 
@@ -888,42 +1288,9 @@
         });
       }
 
-      var overlay = document.createElement('div');
-      overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999998;display:flex;align-items:center;justify-content:center;';
-      var box = document.createElement('div');
-      box.style.cssText = 'background:#fff;border-radius:12px;padding:24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;font-family:-apple-system,sans-serif;';
-      var h = '<div style="font-size:16px;font-weight:600;color:#333;margin-bottom:12px;">发布结果汇总</div>';
-      h += '<div style="color:#52c41a;margin-bottom:8px;">成功: ' + successCount + ' 个</div>';
-      if (failList.length > 0) h += '<div style="color:#ff4d4f;margin-bottom:8px;">未成功: ' + failList.length + ' 个</div>';
-      h += '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:8px;">';
-      var idx = 0;
-      successList.forEach(function (r) {
-        idx++;
-        h += '<div style="padding:6px 0;border-bottom:1px solid #f0f0f0;">';
-        h += '<div style="font-size:13px;color:#333;">' + idx + '. ' + (r.title || '未知商品') + '</div>';
-        h += '<div style="font-size:12px;color:#52c41a;margin-top:2px;">发布成功' + (r.articleId ? ' (ID: ' + r.articleId + ')' : '') + '</div>';
-        h += '</div>';
-      });
-      failList.forEach(function (r) {
-        idx++;
-        var statusColor = r.status === 'skip_3day' ? '#faad14' : '#ff4d4f';
-        var statusText = r.status === 'skip_3day' ? '已跳过(重复)' : r.status === 'error' ? '失败' : '未确认';
-        h += '<div style="padding:6px 0;border-bottom:1px solid #f0f0f0;">';
-        h += '<div style="font-size:13px;color:#333;">' + idx + '. ' + (r.title || '未知商品') + '</div>';
-        var reasonHtml = r.reason;
-        if (r.prevUrl) {
-          reasonHtml = '<a href="' + r.prevUrl + '" target="_blank" style="color:' + statusColor + ';text-decoration:underline;">' + r.reason + '</a>';
-        }
-        h += '<div style="font-size:12px;color:' + statusColor + ';margin-top:2px;">' + statusText + '：' + reasonHtml + '</div>';
-        h += '</div>';
-      });
-      h += '</div>';
-      h += '<div style="text-align:right;margin-top:12px;"><button id="tuopin-result-close" style="padding:6px 16px;border:1px solid #ddd;border-radius:4px;background:#fff;cursor:pointer;font-size:13px;">关闭</button></div>';
-      box.innerHTML = h;
-      overlay.appendChild(box);
-      document.body.appendChild(overlay);
-      document.getElementById('tuopin-result-close').onclick = function () { overlay.remove(); };
-      overlay.onclick = function (e) { if (e.target === overlay) overlay.remove(); };
+      // 刷新右上角固定汇总面板（替代旧的遮罩弹窗）
+      buildSummaryPanel();
+      if (window.__tuopinRenderSummary) window.__tuopinRenderSummary();
     }
 
     window.addEventListener('load', function () {
@@ -932,12 +1299,252 @@
 
     return;
   }
-  // ===== END SMZDM 逻辑 =====
+  // ===== END SMZDM add_guonei 逻辑 =====
+
+  // ===== SMZDM edit_youhui 编辑页逻辑（3日同价文章更新）=====
+  if (location.hostname === 'youhui.bgm.smzdm.com' && location.pathname.indexOf('edit_youhui') >= 0) {
+    var editQueue = [];
+    try { editQueue = JSON.parse(GM_getValue('tuopin_edit_queue', '[]')); } catch (e) {}
+    if (!editQueue.length) return;
+
+    var editIdx = parseInt(GM_getValue('tuopin_edit_index', '0')) || 0;
+    if (editIdx >= editQueue.length) {
+      GM_setValue('tuopin_edit_queue', '[]');
+      GM_setValue('tuopin_edit_index', 0);
+      return;
+    }
+
+    function editLog(msg) {
+      console.log('[拓品编辑] ' + msg);
+      var box = document.getElementById('tuopin-edit-log');
+      if (box) { box.innerHTML += '<div>' + msg + '</div>'; box.scrollTop = box.scrollHeight; }
+    }
+
+    function createEditPanel() {
+      if (document.getElementById('tuopin-edit-panel')) return;
+      var panel = document.createElement('div');
+      panel.id = 'tuopin-edit-panel';
+      panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:300px;font-family:-apple-system,sans-serif;font-size:13px;';
+      panel.innerHTML =
+        '<div style="font-weight:600;font-size:15px;color:#1890ff;margin-bottom:8px;">拓品助手 - 更新3日精选文章</div>' +
+        '<div id="tuopin-edit-progress" style="color:#333;margin-bottom:6px;">准备中...</div>' +
+        '<div id="tuopin-edit-log" style="max-height:180px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:8px;font-size:11px;line-height:1.6;color:#666;"></div>';
+      getRightStack().appendChild(panel);
+    }
+
+    function setInputValueEdit(el, val) {
+      var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (nativeInputValueSetter && nativeInputValueSetter.set) {
+        nativeInputValueSetter.set.call(el, val);
+      } else { el.value = val; }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function sleepEdit(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+
+    async function processEditQueue() {
+      createEditPanel();
+      var item = editQueue[editIdx];
+      var progressEl = document.getElementById('tuopin-edit-progress');
+      if (progressEl) progressEl.textContent = '更新 ' + (editIdx + 1) + '/' + editQueue.length + ': ' + (item.title || '').slice(0, 20);
+      editLog('文章ID: ' + item.articleId);
+
+      // 等待页面表单加载完成
+      await sleepEdit(2000);
+      var titleEl = document.querySelector('[name="article_title"]');
+      for (var w = 0; w < 20 && !titleEl; w++) {
+        await sleepEdit(500);
+        titleEl = document.querySelector('[name="article_title"]');
+      }
+      if (!titleEl) { editLog('错误：页面未加载完成'); return; }
+      editLog('页面加载完成，开始填写...');
+
+      // 1. 到手价（订单价）= dealPrice，折后单价 = price
+      var copy1 = item.promoCopy || '';
+      var copyDealMatch = copy1.match(/(?<![金币])到手价([\d.]+)元/);
+      var rawDeal = copyDealMatch ? parseFloat(copyDealMatch[1]) : (parseFloat(item.dealPrice || item.price || '0') || 0);
+
+      // 从文案提取折后单价：有补贴优先"补贴后折x元/件"，无补贴用到手"折/低至x元/件"
+      var copySubsidyZhe = copy1.match(/补贴后折([\d.]+)元\/件/);
+      var copyDealZhe = copy1.match(/(?:^|[，,])(?:折|低至)([\d.]+)元\/件/);
+      var subsidyAmt = parseFloat(item.subsidy) || 0;
+      var unitPriceVal;
+      if (subsidyAmt > 0 && copySubsidyZhe) {
+        unitPriceVal = parseFloat(copySubsidyZhe[1]).toFixed(2);
+      } else if (copyDealZhe) {
+        unitPriceVal = parseFloat(copyDealZhe[1]).toFixed(2);
+      } else {
+        var baseAfterSub = subsidyAmt > 0 ? Math.max(0, rawDeal - subsidyAmt) : rawDeal;
+        unitPriceVal = baseAfterSub.toFixed(2);
+      }
+
+      var priceEl = document.querySelector('[name="article_digital_price"]');
+      if (priceEl) { setInputValueEdit(priceEl, unitPriceVal); editLog('✓ 折后单价: ' + unitPriceVal); }
+
+      // 订单价（article_page_price）不修改
+
+      // 2. 价格优惠描述（淘金币到手价xx元，返xx值得买积分后）
+      var subsidyPoints = Math.round(subsidyAmt * 10);
+      var priceDescText = '';
+      var tjbAmt = parseFloat(item.manualTjb || item.taoJinBi || '0') || 0;
+      // 优先从文案取淘金币到手价
+      var copyTjbMatch = copy1.match(/淘金币到手价([\d.]+)元/);
+      if (copyTjbMatch) {
+        priceDescText = '淘金币到手价' + copyTjbMatch[1] + '元，';
+      } else if (tjbAmt > 0) {
+        var afterSub = Math.max(0, Math.round((rawDeal - subsidyAmt) * 100) / 100);
+        var tjbFinal = Math.max(0, Math.round((afterSub - tjbAmt) * 100) / 100);
+        priceDescText = '淘金币到手价' + tjbFinal.toFixed(2) + '元，';
+      }
+      priceDescText += '返' + subsidyPoints + '值得买积分后';
+      var priceDescEl = document.querySelector('[name="article_subtitle_new"]');
+      if (priceDescEl) { setInputValueEdit(priceDescEl, priceDescText); editLog('✓ 价格优惠: ' + priceDescText); }
+
+      // 3. 优惠力度 UEditor（只填补贴文字）
+      if (copy1) {
+        try {
+          if (typeof UE !== 'undefined' && UE.instants && UE.instants.ueditorInstant0) {
+            var subsidyMatch = copy1.match(/(返\d+值得买积分[，,]?补贴后低至[\d.]+元)/);
+            if (!subsidyMatch) subsidyMatch = copy1.match(/(返\d+值得买积分.*)/);
+            var subsidyOnlyText = subsidyMatch ? subsidyMatch[1] : '';
+            if (subsidyOnlyText) {
+              UE.instants.ueditorInstant0.setContent('<p><strong style="color:red">' + subsidyOnlyText + '</strong></p>');
+              UE.instants.ueditorInstant0.sync();
+              editLog('✓ 优惠力度: ' + subsidyOnlyText);
+            }
+          }
+        } catch (e) { editLog('UEditor写入失败: ' + e.message); }
+      }
+
+      // 4. 标签：加"今日必买"
+      await sleepEdit(200);
+      var tagInput = document.querySelector('#tag_name');
+      if (tagInput) {
+        setInputValueEdit(tagInput, '今日必买');
+        await sleepEdit(100);
+        var addTagBtn = document.querySelector('#add_new_tag');
+        if (addTagBtn) { addTagBtn.click(); editLog('✓ 标签: 今日必买'); }
+      }
+
+      // 5. 精选
+      await sleepEdit(200);
+      var jxCb = document.getElementById('article_type_jingxuan');
+      if (jxCb && !jxCb.checked) { jxCb.click(); await sleepEdit(300); editLog('✓ 勾选精选'); }
+
+      // 6. 立即同步
+      var syncRadio = document.getElementById('article_sync_home_1');
+      if (syncRadio && !syncRadio.checked) syncRadio.click();
+
+      // 7. 立即更新（触发时间同步），处理弹窗后继续
+      var updateBtn = null;
+      var allBtnsU = document.querySelectorAll('button');
+      for (var ui = 0; ui < allBtnsU.length; ui++) {
+        if ((allBtnsU[ui].textContent || '').trim() === '立即更新' && allBtnsU[ui].offsetParent !== null) {
+          updateBtn = allBtnsU[ui]; break;
+        }
+      }
+      if (updateBtn) {
+        updateBtn.click();
+        editLog('✓ 已点击立即更新');
+        await sleepEdit(1500);
+        // 处理弹窗（时间同步确认弹窗 / 私券链接弹窗），按 value 匹配"确定"或"确认"
+        var popBtnsU = document.querySelectorAll('.boxy-btn1, .boxy-btn2, .boxy-btn3');
+        for (var pu = 0; pu < popBtnsU.length; pu++) {
+          if (popBtnsU[pu].offsetParent !== null) {
+            var puv = (popBtnsU[pu].value || popBtnsU[pu].textContent || '').trim();
+            if (puv === '确定' || puv === '确认') { popBtnsU[pu].click(); break; }
+          }
+        }
+        await sleepEdit(1500);
+        // 再次关闭可能出现的"同步成功"通知弹窗（否则遮罩会阻挡后续操作）
+        var popBtnsU2 = document.querySelectorAll('.boxy-btn1, .boxy-btn2, .boxy-btn3');
+        for (var pu2 = 0; pu2 < popBtnsU2.length; pu2++) {
+          if (popBtnsU2[pu2].offsetParent !== null) { popBtnsU2[pu2].click(); break; }
+        }
+        var blackout = document.querySelector('.boxy-modal-blackout');
+        if (blackout && blackout.offsetParent !== null) blackout.click();
+        await sleepEdit(1000);
+      }
+
+      // 8. 保存（循环直到"保存成功"，优先处理"忽略提醒"弹窗）
+      await sleepEdit(300);
+      try {
+        if (typeof UE !== 'undefined' && UE.instants) {
+          for (var k in UE.instants) { try { UE.instants[k].sync(); } catch (e) {} }
+        }
+      } catch (e) {}
+
+      var saved = false;
+      for (var attempt = 0; attempt < 5 && !saved; attempt++) {
+        if (document.body.innerText.indexOf('保存成功') >= 0) { saved = true; break; }
+        var saveBtns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+        for (var si = 0; si < saveBtns.length; si++) {
+          var st = (saveBtns[si].textContent || '').trim() || saveBtns[si].value || '';
+          if (st === '保存修改' && saveBtns[si].offsetParent !== null) { saveBtns[si].click(); break; }
+        }
+        await sleepEdit(1200);
+        // 处理弹窗：优先"忽略提醒"(.boxy-btn3)，其次"确定"(.boxy-btn1)
+        var b3s = document.querySelectorAll('.boxy-btn3');
+        var clickedB3 = false;
+        for (var b3i = 0; b3i < b3s.length; b3i++) {
+          if (b3s[b3i].offsetParent !== null) {
+            var b3v = b3s[b3i].getAttribute('value') || '';
+            if (b3v.indexOf('忽略') >= 0) { b3s[b3i].click(); clickedB3 = true; break; }
+          }
+        }
+        if (!clickedB3) {
+          for (var b3j = 0; b3j < b3s.length; b3j++) {
+            if (b3s[b3j].offsetParent !== null) { b3s[b3j].click(); clickedB3 = true; break; }
+          }
+        }
+        if (!clickedB3) {
+          var b1 = document.querySelector('.boxy-btn1');
+          if (b1 && b1.offsetParent !== null) b1.click();
+        }
+        await sleepEdit(1500);
+      }
+      editLog(saved ? '✓ 保存成功' : '⚠ 未检测到保存成功，继续下一步');
+
+      // 8. 处理下一个或跳补贴
+      editIdx++;
+      GM_setValue('tuopin_edit_index', editIdx);
+      if (editIdx < editQueue.length) {
+        editLog('还剩 ' + (editQueue.length - editIdx) + ' 篇，2秒后跳转...');
+        await sleepEdit(2000);
+        window.onbeforeunload = null;
+        location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + editQueue[editIdx].articleId;
+      } else {
+        GM_setValue('tuopin_edit_queue', '[]');
+        GM_setValue('tuopin_edit_index', 0);
+        editLog('全部编辑完成，检查补贴队列...');
+        var pendingSubsidy2 = [];
+        try { pendingSubsidy2 = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
+        if (pendingSubsidy2.length > 0) {
+          editLog('有 ' + pendingSubsidy2.length + ' 个补贴待创建，2秒后跳转...');
+          await sleepEdit(2000);
+          window.onbeforeunload = null;
+          location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+        } else {
+          if (progressEl) progressEl.textContent = '全部完成！';
+        }
+      }
+    }
+
+    if (document.readyState === 'complete') {
+      processEditQueue();
+    } else {
+      window.addEventListener('load', function() { setTimeout(processEditQueue, 1500); });
+    }
+    return;
+  }
+  // ===== END edit_youhui 逻辑 =====
 
   // ===== 补贴表单自动化逻辑 =====
   if (location.hostname === 'biaodan.bgm.smzdm.com') {
-    // 拦截原生 alert/confirm（如"字段添加成功！页面即将刷新..."），自动确认
-    var _noop = function() { return true; };
+    // 拦截原生 alert/confirm（如"字段添加成功！页面即将刷新..."），自动确认并记录消息
+    var _lastAlertMsg = '';
+    var _noop = function(msg) { _lastAlertMsg = String(msg || ''); return true; };
     try { unsafeWindow.alert = _noop; unsafeWindow.confirm = _noop; } catch(e) {}
     window.alert = _noop; window.confirm = _noop;
 
@@ -959,15 +1566,17 @@
     }
 
     function createSubsidyPanel() {
+      if (document.getElementById('tuopin-subsidy-panel')) return;
       var panel = document.createElement('div');
-      panel.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:340px;font-family:-apple-system,sans-serif;font-size:13px;max-height:90vh;overflow-y:auto;';
+      panel.id = 'tuopin-subsidy-panel';
+      panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:340px;font-family:-apple-system,sans-serif;font-size:13px;max-height:50vh;overflow-y:auto;';
       panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
         '<div style="font-weight:600;font-size:15px;color:#e74c3c;">补贴表单自动创建</div>' +
         '<button id="tuopin-subsidy-stop" style="padding:4px 12px;border:1px solid #ff4d4f;border-radius:4px;background:#fff;color:#ff4d4f;cursor:pointer;font-size:12px;">停止</button>' +
         '</div>' +
         '<div id="tuopin-subsidy-progress" style="color:#1890ff;margin-bottom:6px;">准备中...</div>' +
         '<div id="tuopin-subsidy-log" style="max-height:200px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:8px;font-size:11px;line-height:1.6;color:#666;"></div>';
-      document.body.appendChild(panel);
+      getRightStack().appendChild(panel);
       document.getElementById('tuopin-subsidy-stop').onclick = function() {
         GM_setValue('tuopin_subsidy_queue', '[]');
         GM_setValue('tuopin_subsidy_index', 0);
@@ -1081,9 +1690,15 @@
       // 2. 适用终端: APP+PC+Wap
       clickRadioByText('APP+PC+Wap');
 
-      // 3. 活动链接
+      // 3. 活动链接（用3日精选文章id构建链接，如果是来自价格相等的跳过）
       var linkField = document.querySelector('input[placeholder*="用于发站内信时的活动链接"]');
-      if (linkField) setInputValue(linkField, 'https://www.smzdm.com/p/' + item.articleId + '/');
+      if (linkField) {
+        var articleUrl = 'https://www.smzdm.com/p/' + item.articleId + '/';
+        if (item.fromPrevArticle && item.articleId) {
+          articleUrl = 'https://www.smzdm.com/p/' + item.articleId + '/';
+        }
+        setInputValue(linkField, articleUrl);
+      }
 
       // 4. ROI
       var roiField = document.querySelector('input[placeholder*="支持小数点后两位"]')
@@ -1395,78 +2010,149 @@
 
       await sleep(300);
 
-      // 点击"保存更新"按钮
+      // 点击"保存更新"按钮（本页保存后会刷新本页、无跳转无成功提示）
+      var saveBtn = null;
       var btns3 = document.querySelectorAll('button, input[type="submit"], a');
       for (var sb = 0; sb < btns3.length; sb++) {
         var sbText = (btns3[sb].textContent || btns3[sb].value || '').trim();
-        if (sbText.indexOf('保存更新') >= 0) {
-          btns3[sb].click();
-          subsidyLog('✓ 已点击保存更新');
-          subsidyLog('--- 表单创建完成 ---');
-          return;
-        }
+        if (sbText.indexOf('保存更新') >= 0) { saveBtn = btns3[sb]; break; }
       }
-      subsidyLog('✗ 未找到保存更新按钮');
+      if (!saveBtn) {
+        subsidyLog('✗ 未找到保存更新按钮');
+        return;
+      }
+
+      // 关键：点保存前先推进索引 + 记录当前表单ID。
+      // 因为点保存会刷新本页，click 之后的代码（含跳转）会随页面销毁而丢失，
+      // 所以必须在 click 之前把进度落盘。
+      var fIdMatch = location.href.match(/form_id[=\/](\d+)/) || location.href.match(/\/(\d{3,})(?:[\/?#]|$)/);
+      var fId = fIdMatch ? fIdMatch[1] : '';
+      GM_setValue('tuopin_subsidy_saved_formid', fId);
+      GM_setValue('tuopin_subsidy_index', subsidyIdx + 1);
+      // 记录该文章已补贴（供汇总面板状态显示）
+      try {
+        var doneArr = JSON.parse(GM_getValue('tuopin_subsidy_done', '[]'));
+        var curItem = subsidyQueue[subsidyIdx];
+        if (curItem && curItem.articleId && doneArr.indexOf(String(curItem.articleId)) < 0) {
+          doneArr.push(String(curItem.articleId));
+          GM_setValue('tuopin_subsidy_done', JSON.stringify(doneArr));
+        }
+      } catch (e) {}
+      subsidyLog('✓ 表单 ' + (subsidyIdx + 1) + '/' + subsidyQueue.length + ' 点击保存更新（保存一次即推进下一个）');
+      saveBtn.click();
+      // 给保存请求一点时间；若本页未刷新，再主动跳列表页
+      await sleep(2000);
+      location.href = '/biaodan/subsidies_list_ver3';
     }
 
     async function processSubsidyQueue() {
-      // 检查是否已被停止
       var currentQueue = [];
       try { currentQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) {}
       if (!currentQueue || currentQueue.length === 0) return;
 
+      // 每次都用最新索引，防止跨页跳转时 subsidyIdx 闭包值过期
+      var idx = parseInt(GM_getValue('tuopin_subsidy_index', '0')) || 0;
+      // 全部完成：清空队列并提示（保留 publish_results，让汇总面板继续展示"已补贴"状态）
+      if (idx >= currentQueue.length) {
+        GM_setValue('tuopin_subsidy_queue', '[]');
+        GM_setValue('tuopin_subsidy_index', 0);
+        GM_setValue('tuopin_subsidy_saved_formid', '');
+        subsidyLog('✓ 全部 ' + currentQueue.length + ' 个补贴表单处理完成！');
+        buildSummaryPanel();
+        if (window.__tuopinRenderSummary) window.__tuopinRenderSummary();
+        createSubsidyPanel();
+        var progressEl2 = document.getElementById('tuopin-subsidy-progress');
+        if (progressEl2) progressEl2.textContent = '全部完成！共 ' + currentQueue.length + ' 个';
+        return;
+      }
+      // 同步到模块级变量，供 fillSubsidyFormPage2 等使用
+      subsidyIdx = idx;
+
+      buildSummaryPanel();
+      if (window.__tuopinRenderSummary) window.__tuopinRenderSummary();
       createSubsidyPanel();
-      var item = subsidyQueue[subsidyIdx];
+      var item = currentQueue[subsidyIdx];
       var progressEl = document.getElementById('tuopin-subsidy-progress');
-      if (progressEl) progressEl.textContent = '处理 ' + (subsidyIdx + 1) + '/' + subsidyQueue.length + ': ' + (item.title || '').slice(0, 20);
+      if (progressEl) progressEl.textContent = '处理 ' + (subsidyIdx + 1) + '/' + currentQueue.length + ': ' + (item.title || '').slice(0, 20);
       subsidyLog('文章ID: ' + item.articleId + ' 补贴: ' + item.subsidy + '元');
 
-      // 在列表页 → 点击新建按钮
+      // 在列表页 → 点击新建按钮，开始本品的完整流程
       if (location.pathname.indexOf('subsidies_list') >= 0) {
         subsidyLog('在列表页，查找新建按钮...');
         await sleep(2000);
-        var btns = document.querySelectorAll('a, button, .el-button');
-        var clicked = false;
-        for (var i = 0; i < btns.length; i++) {
-          if ((btns[i].textContent || '').indexOf('新建机审补贴购表单') >= 0) {
-            btns[i].click();
-            clicked = true;
-            subsidyLog('✓ 已点击"新建机审补贴购表单"');
-            break;
+        // 找到文本含"新建机审补贴购表单"的最内层可点击元素（a / button / .el-button）
+        var allEls = document.querySelectorAll('a, button, .el-button, span, div');
+        var target = null;
+        for (var i = 0; i < allEls.length; i++) {
+          var el = allEls[i];
+          var txt = (el.textContent || '').trim();
+          if (txt.indexOf('新建机审补贴购表单') < 0) continue;
+          // 选最内层：该元素内部不再含有同样文字的子元素
+          var hasInner = false;
+          var inner = el.querySelectorAll('a, button, .el-button, span, div');
+          for (var j = 0; j < inner.length; j++) {
+            if ((inner[j].textContent || '').indexOf('新建机审补贴购表单') >= 0) { hasInner = true; break; }
           }
+          if (!hasInner) { target = el; break; }
         }
-        if (!clicked) {
+        // 优先取可点击祖先（a/button/.el-button）
+        var clickTarget = target;
+        if (target && !/^(A|BUTTON)$/.test(target.tagName) && !target.classList.contains('el-button')) {
+          var anc = target.closest('a, button, .el-button');
+          if (anc) clickTarget = anc;
+        }
+        if (clickTarget) {
+          // 若是 <a> 且有 href，记下来兜底直接导航
+          var href = clickTarget.tagName === 'A' ? clickTarget.getAttribute('href') : (clickTarget.closest && clickTarget.closest('a') ? clickTarget.closest('a').getAttribute('href') : '');
+          clickTarget.click();
+          subsidyLog('✓ 已点击"新建机审补贴购表单"，等待跳转...');
+          // 等待是否离开列表页；没跳转则用 href 兜底导航
+          var navigated = false;
+          for (var w = 0; w < 12; w++) {
+            await sleep(500);
+            if (location.pathname.indexOf('subsidies_list') < 0) { navigated = true; break; }
+          }
+          if (!navigated && href) {
+            subsidyLog('点击未跳转，使用链接直接打开表单页');
+            if (href.indexOf('http') === 0) location.href = href;
+            else location.href = href.indexOf('/') === 0 ? href : '/biaodan/' + href;
+          } else if (!navigated) {
+            subsidyLog('✗ 点击后未跳转且无链接，请手动点击新建按钮');
+          }
+        } else {
           subsidyLog('✗ 未找到"新建机审补贴购表单"按钮');
           subsidyLog('请手动点击新建按钮，脚本将在表单页自动填写');
         }
         return;
       }
 
-      // 在表单页 → 填写表单（第一页：填标题、价格、文案等）
+      // 在表单第一页 → 填写表单（标题、价格、文案等）
       if (location.pathname.indexOf('form_name') >= 0 || location.search.indexOf('type=4') >= 0) {
         await fillSubsidyForm(item);
         return;
       }
 
-      // 在表单第二页（字段配置页）→ 执行第二页逻辑
+      // 在表单第二页（字段配置页）→ 执行第二页逻辑（含保存更新 + 推进下一个品）
       var isPage2 = location.pathname.indexOf('form_field') >= 0 || location.pathname.indexOf('form_type') >= 0 || location.search.indexOf('step=2') >= 0;
       if (isPage2) {
-        await fillSubsidyFormPage2();
-        subsidyIdx++;
-        GM_setValue('tuopin_subsidy_index', subsidyIdx);
-        if (subsidyIdx >= subsidyQueue.length) {
-          subsidyLog('全部 ' + subsidyQueue.length + ' 个补贴表单处理完成！');
-          GM_setValue('tuopin_subsidy_queue', '[]');
-          GM_setValue('tuopin_subsidy_index', 0);
-        } else {
-          subsidyLog('还剩 ' + (subsidyQueue.length - subsidyIdx) + ' 个待处理');
-          await sleep(2000);
+        // 若本表单已点过保存（保存导致本页刷新又回到 page2），不再重复保存，直接跳列表页建下一个
+        var curFidMatch = location.href.match(/form_id[=\/](\d+)/) || location.href.match(/\/(\d{3,})(?:[\/?#]|$)/);
+        var curFid = curFidMatch ? curFidMatch[1] : '';
+        var savedFid = GM_getValue('tuopin_subsidy_saved_formid', '');
+        if (curFid && curFid === savedFid) {
+          subsidyLog('表单 ' + curFid + ' 已保存，跳列表页继续下一个');
+          GM_setValue('tuopin_subsidy_saved_formid', '');
+          await sleep(800);
           location.href = '/biaodan/subsidies_list_ver3';
+          return;
         }
+        await fillSubsidyFormPage2();
         return;
       }
 
       subsidyLog('当前页面非列表/表单页，等待跳转...');
+      await sleep(2000);
+      location.href = '/biaodan/subsidies_list_ver3';
     }
 
     if (document.readyState === 'complete') {
@@ -1676,6 +2362,12 @@
         } else {
           if (idx !== -1) ids.splice(idx, 1);
           hl(item, false);
+          // 同步从 selected_data 里删除对应商品
+          try {
+            var sdata = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]');
+            sdata = sdata.filter(function(d) { return String(d.id || d.gid || '') !== String(id); });
+            localStorage.setItem('tuopin_selected_data', JSON.stringify(sdata, null, 2));
+          } catch (e) {}
         }
         sv(ids);
         uc();
@@ -1838,9 +2530,13 @@
       dealPrice = priceVal;
     }
 
-    // 售价（只有当原价高于到手价时显示）
-    var sellPrice = origPrice > dealPrice ? origPrice : priceVal > dealPrice ? priceVal : 0;
-    if (sellPrice > dealPrice) {
+    // 售价（只有当原价高于到手价时显示，手动输入优先）
+    var manualSell = item.manualSellPrice && parseFloat(item.manualSellPrice) > 0 ? parseFloat(item.manualSellPrice) : 0;
+    var sellPrice = manualSell > 0 ? manualSell : (origPrice > dealPrice ? origPrice : (priceVal > dealPrice ? priceVal : 0));
+    // 手动填了售价，无论是否高于到手价都显示
+    if (manualSell > 0) {
+      parts.push('天猫精选目前售价' + manualSell + '元');
+    } else if (sellPrice > dealPrice) {
       parts.push('天猫精选目前售价' + sellPrice + '元');
     }
 
@@ -1909,18 +2605,19 @@
     // 到手价（固定，从素材倒推）
     var subsidyAmount = item.subsidy && parseFloat(item.subsidy) > 0 ? parseFloat(item.subsidy) : 0;
     parts.push('到手价' + dealPrice.toFixed(2) + '元');
+    if (parseInt(qty) > 1) {
+      // 到手价的折单价（纯到手价 ÷ 件数）
+      parts.push('折' + (dealPrice / parseInt(qty)).toFixed(2) + '元/件');
+    }
     if (subsidyAmount > 0) {
       var subsidyPoints = Math.round(subsidyAmount * 10);
       var afterSubsidy = Math.round((dealPrice - subsidyAmount) * 100) / 100;
       if (afterSubsidy < 0) afterSubsidy = 0;
       parts.push('返' + subsidyPoints + '值得买积分，补贴后低至' + afterSubsidy.toFixed(2) + '元');
-    }
-
-    if (parseInt(qty) > 1) {
-      var baseForUnit = subsidyAmount > 0 ? Math.round((dealPrice - subsidyAmount) * 100) / 100 : dealPrice;
-      if (baseForUnit < 0) baseForUnit = 0;
-      var unitPriceVal = (baseForUnit / parseInt(qty)).toFixed(2);
-      parts.push('折' + unitPriceVal + '元/件');
+      if (parseInt(qty) > 1) {
+        // 补贴后的折单价（补贴后价 ÷ 件数）
+        parts.push('补贴后折' + (afterSubsidy / parseInt(qty)).toFixed(2) + '元/件');
+      }
     }
 
     // 淘金币信息（在补贴后价格基础上减）
@@ -1978,12 +2675,28 @@
     var tjbAmount = item.manualTjb && parseFloat(item.manualTjb) > 0 ? parseFloat(item.manualTjb) : 0;
     var tljAmount = item.manualTlj && parseFloat(item.manualTlj) > 0 ? parseFloat(item.manualTlj) : 0;
 
-    // 先删掉旧的淘礼金、补贴、折xx元/件、淘金币部分
+    // 先删掉旧的售价、淘礼金、补贴、折xx元/件、淘金币部分
+    copy = copy.replace(/^[，,]?\s*天猫精选目前售价[\d.]+元[，,]?/, '');
+    copy = copy.replace(/天猫精选目前售价[\d.]+元[，,]?/g, '');
     copy = copy.replace(/[，,]\s*淘礼金[\d.]+元/, '');
     copy = copy.replace(/[，,]\s*返\d+值得买积分[^，]*(?:，补贴后低至[\d.]+元)?/, '');
-    copy = copy.replace(/[，,]?\s*折[\d.]+元\/件/g, '');
+    copy = copy.replace(/[，,]?\s*(?:折|低至|补贴后折)[\d.]+元\/件/g, '');
     copy = copy.replace(/[，,]\s*淘金币[已抵]*[\d.]+元/, '');
     copy = copy.replace(/[，,]\s*淘金币到手价[\d.]+元/, '');
+
+    // 售价插在最前面（手动输入优先，否则用原算的售价）
+    var dealMatch0 = copy.match(/到手价([\d.]+)元/);
+    var dealPrice0 = dealMatch0 ? parseFloat(dealMatch0[1]) : 0;
+    var manualSell = item.manualSellPrice && parseFloat(item.manualSellPrice) > 0 ? parseFloat(item.manualSellPrice) : 0;
+    var origP = parseFloat(item.original_price || '0');
+    var priceP = parseFloat((item.price || '0').replace('元', '')) || 0;
+    var sellP = manualSell > 0 ? manualSell : (origP > dealPrice0 ? origP : (priceP > dealPrice0 ? priceP : 0));
+    // 手动填了售价，无论是否高于到手价都显示
+    if (manualSell > 0) {
+      copy = '天猫精选目前售价' + manualSell + '元，' + copy.replace(/^[，,]\s*/, '');
+    } else if (sellP > dealPrice0) {
+      copy = '天猫精选目前售价' + sellP + '元，' + copy.replace(/^[，,]\s*/, '');
+    }
 
     // 淘礼金插入在售价后面
     if (tljAmount > 0) {
@@ -1996,6 +2709,11 @@
       }
     }
 
+    // 重新追加到手价折单价（纯到手价 ÷ 件数）
+    if (qty > 1) {
+      copy += '，折' + (dealPrice / qty).toFixed(2) + '元/件';
+    }
+
     // 重新追加补贴部分
     if (subsidyAmount > 0) {
       var subsidyPoints = Math.round(subsidyAmount * 10);
@@ -2003,11 +2721,8 @@
       if (afterSubsidy < 0) afterSubsidy = 0;
       copy += '，返' + subsidyPoints + '值得买积分，补贴后低至' + afterSubsidy.toFixed(2) + '元';
       if (qty > 1) {
-        copy += '，折' + (afterSubsidy / qty).toFixed(2) + '元/件';
+        copy += '，补贴后折' + (afterSubsidy / qty).toFixed(2) + '元/件';
       }
-    } else if (qty > 1) {
-      // 无补贴时，直接在到手价后追加折单价
-      copy += '，折' + (dealPrice / qty).toFixed(2) + '元/件';
     }
 
     // 重新追加淘金币部分（在补贴后价格基础上再减）
@@ -2033,6 +2748,20 @@
     var data = [];
     try { data = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]'); } catch (e) {}
     if (data.length === 0) return;
+    // 打开看板时，对非手动编辑的文案按当前字段重新生成，避免缓存旧文案（如清空补贴后仍显示"补贴后折"）
+    var dataChanged = false;
+    data.forEach(function (item) {
+      if (item && !item.customCopy) {
+        var fresh = genCopy(item);
+        if (fresh !== item.promoCopy) {
+          item.promoCopy = fresh;
+          dataChanged = true;
+        }
+      }
+    });
+    if (dataChanged) {
+      localStorage.setItem('tuopin_selected_data', JSON.stringify(data, null, 2));
+    }
     var d = document.createElement('div');
     d.id = 'tuopin-detail';
     d.style.cssText = 'position:fixed;top:80px;right:225px;z-index:99998;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;max-height:80vh;overflow-y:auto;width:560px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;';
@@ -2050,6 +2779,7 @@
       h += '</span>';
       h += '<input id="tuopin-title-input-' + idx + '" type="text" value="' + (item.title || '').replace(/"/g, '&quot;') + '" style="display:none;flex:1;font-size:13px;padding:2px 6px;border:1px solid #1890ff;border-radius:4px;font-weight:600;" />';
       h += '<span class="tuopin-title-edit-btn" data-idx="' + idx + '" style="cursor:pointer;color:#1890ff;font-size:12px;white-space:nowrap;padding:2px 6px;border:1px solid #1890ff;border-radius:3px;">编辑</span>';
+      h += '<span class="tuopin-item-del-btn" data-idx="' + idx + '" style="cursor:pointer;color:#ff4d4f;font-size:14px;white-space:nowrap;padding:2px 6px;border:1px solid #ff4d4f;border-radius:3px;line-height:1;" title="删除">×</span>';
       h += '</div>';
       if (item.commission_rate && parseFloat(item.commission_rate) > 0) {
         var commRate = parseFloat(item.commission_rate);
@@ -2066,6 +2796,7 @@
         }
       }
       h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
+      h += '<span style="color:#34495e;font-weight:500;display:flex;align-items:center;gap:3px;">售价：<input class="tuopin-sellprice-input" data-idx="' + idx + '" type="text" value="' + (item.manualSellPrice || '') + '" style="width:50px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:12px;" placeholder="选填">元</span>';
       h += '<span style="color:#e74c3c;font-weight:500;display:flex;align-items:center;gap:3px;">补贴：<input class="tuopin-subsidy-input" data-idx="' + idx + '" type="text" value="' + (item.subsidy || '') + '" style="width:50px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:12px;" placeholder="0">元</span>';
       h += '<span style="color:#27ae60;font-weight:500;display:flex;align-items:center;gap:3px;">淘金币：<input class="tuopin-tjb-input" data-idx="' + idx + '" type="text" value="' + (item.manualTjb || '') + '" style="width:50px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:12px;" placeholder="0">元</span>';
       h += '<span style="color:#7c3aed;font-weight:500;display:flex;align-items:center;gap:3px;">淘礼金：<input class="tuopin-tlj-input" data-idx="' + idx + '" type="text" value="' + (item.manualTlj || '') + '" style="width:50px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:12px;" placeholder="0">元</span>';
@@ -2075,7 +2806,10 @@
       if (item.is_88vip === '1') tagLine.push('88VIP 95折');
       if (item.taolijin && parseFloat(item.taolijin) > 0) tagLine.push('淘礼金' + item.taolijin + '元');
       if (tagLine.length > 0) h += '<div style="color:#7c3aed;">' + tagLine.join(' | ') + '</div>';
-      if (item.detailPromos && item.detailPromos.length > 0) h += '<div style="color:#e67e22;">' + item.detailPromos.join('，') + '</div>';
+      if (item.detailPromos && item.detailPromos.length > 0) {
+        var dispPromos = item.detailPromos.filter(function(p) { return !p.match(/淘金币/); });
+        if (dispPromos.length > 0) h += '<div style="color:#e67e22;">' + dispPromos.join('，') + '</div>';
+      }
       if (item.detailLowestPrice) {
         var tjbAmt = 0;
         if (item.detailPromos) item.detailPromos.forEach(function(p) { var m = p.match(/淘金币已抵([\d.]+)元/); if (m) tjbAmt = parseFloat(m[1]); });
@@ -2084,7 +2818,6 @@
         if (tjbAmt > 0) h += '<div style="color:#27ae60;font-weight:600;">淘金币到手价：' + item.detailLowestPrice + '元</div>';
       } else {
         var extras = [];
-        if (item.taoJinBi) extras.push('淘金币 -' + item.taoJinBi + '元');
         if (item.diJin) extras.push('店铺抵金 -' + item.diJin + '元');
         if (item.xiaoFeiQuan) extras.push('消费券 -' + item.xiaoFeiQuan + '元');
         if (extras.length > 0) h += '<div style="color:#e67e22;">' + extras.join('，') + '</div>';
@@ -2112,6 +2845,59 @@
     document.body.appendChild(overlay);
     document.body.appendChild(d);
     document.getElementById('tuopin-detail-close').onclick = function () { d.remove(); overlay.remove(); };
+
+    // 售价输入框事件
+    // X 删除按钮事件
+    d.querySelectorAll('.tuopin-item-del-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var idx = parseInt(btn.dataset.idx);
+        var data = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]');
+        var item = data[idx];
+        data.splice(idx, 1);
+        localStorage.setItem('tuopin_selected_data', JSON.stringify(data, null, 2));
+        // 同步从勾选ID列表里删除
+        if (item) {
+          var itemId = String(item.id || item.gid || '');
+          if (itemId) {
+            var ids = JSON.parse(localStorage.getItem(K) || '[]');
+            ids = ids.filter(function(i) { return String(i) !== itemId; });
+            localStorage.setItem(K, JSON.stringify(ids));
+            uc();
+            // 取消卡片高亮
+            gi().forEach(function(card) {
+              if (String(gid(card)) === itemId) {
+                hl(card, false);
+                var cb = card.querySelector('.tuopin-checkbox');
+                if (cb) cb.checked = false;
+              }
+            });
+          }
+        }
+        // 刷新面板
+        showDetail();
+      });
+    });
+
+    d.querySelectorAll('.tuopin-sellprice-input').forEach(function(input) {
+      var handler = function() {
+        var idx = parseInt(input.dataset.idx);
+        var val = input.value.trim();
+        var data = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]');
+        data[idx].manualSellPrice = val;
+        if (data[idx].customCopy && data[idx].promoCopy) {
+          data[idx].promoCopy = recalcSubsidyInCopy(data[idx].promoCopy, data[idx]);
+        } else {
+          data[idx].promoCopy = genCopy(data[idx]);
+        }
+        var copyDisplay = document.getElementById('tuopin-copy-display-' + idx);
+        if (copyDisplay) copyDisplay.innerHTML = highlightCopy(data[idx].promoCopy);
+        var copyInput = document.getElementById('tuopin-copy-input-' + idx);
+        if (copyInput) copyInput.value = data[idx].promoCopy;
+        localStorage.setItem('tuopin_selected_data', JSON.stringify(data, null, 2));
+      };
+      input.addEventListener('change', handler);
+      input.addEventListener('blur', handler);
+    });
 
     // 补贴输入框事件
     d.querySelectorAll('.tuopin-subsidy-input').forEach(function(input) {
@@ -2412,6 +3198,13 @@
           '<input id="tb-account-input" type="text" placeholder="添加账号" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
           '<button id="tb-account-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
         '</div>' +
+        '<div style="margin-top:8px;">' +
+          '<div style="font-size:11px;color:#999;margin-bottom:4px;">是否在已有文章补贴</div>' +
+          '<select id="tb-subsidy-existing" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;">' +
+            '<option value="no">否</option>' +
+            '<option value="yes">是</option>' +
+          '</select>' +
+        '</div>' +
       '</div>';
     t.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;width:170px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
     document.body.appendChild(t);
@@ -2486,6 +3279,13 @@
       input.value = '';
     };
 
+    // 是否在已有文章补贴
+    var subsidyExistingSel = document.getElementById('tb-subsidy-existing');
+    subsidyExistingSel.value = GM_getValue('tuopin_subsidy_existing', 'no');
+    subsidyExistingSel.onchange = function() {
+      GM_setValue('tuopin_subsidy_existing', this.value);
+    };
+
     document.getElementById('tb-all').onclick = function () {
       var ids = ld();
       gi().forEach(function (item) {
@@ -2539,7 +3339,7 @@
         var card = document.querySelector('.qlistGoodsMap' + id);
         if (!card) return;
         // 优先读卡片上可见的商品名称（短标题）
-        var visibleTitleEl = card.querySelector('[class*="qlist-goods-new-style-title"], [class*="goodsNewStyleTitle"], [class*="goods-new-style-title"]');
+        var visibleTitleEl = card.querySelector('[class*="qlist-goods-new-style-title"], [class*="goodsNewStyleTitle"], [class*="goods-new-style-title"], a[class*="goods-v3-style-title"], a[class*="style-title"]');
         if (visibleTitleEl && visibleTitleEl.textContent.trim()) {
           domTitles[id] = visibleTitleEl.textContent.trim();
         }
@@ -2816,16 +3616,15 @@
           else youhuiParts.push('使用' + item.coupon_amount + '元优惠券');
         }
         var youhuiText = mall + '该商品' + youhuiParts.join('，') + '，到手价' + dealPrice.toFixed(2) + '元，近期好价，喜欢可入～';
-        // 折后单价：补贴后价格÷件数（单件时直接用补贴后价格）
+        // 折后单价：纯到手价 ÷ 件数（单件时直接用到手价）—— 注意不是"补贴后"价格
         var qty = item.qty || '';
         if (!qty) {
           var qm = item.title ? item.title.match(/(\d+)件/) : null;
           qty = qm ? qm[1] : '1';
         }
         var qtyNum = parseInt(qty) || 1;
-        var afterSubsidy = subsidyAmount > 0 ? dealPrice - subsidyAmount : dealPrice;
-        if (afterSubsidy < 0) afterSubsidy = 0;
-        var unitPrice = qtyNum > 1 ? (afterSubsidy / qtyNum).toFixed(2) : afterSubsidy.toFixed(2);
+        // 折后单价用纯到手价（与 genCopy 的"折xx元/件"保持一致，而非"补贴后折"）
+        var unitPrice = qtyNum > 1 ? (dealPrice / qtyNum).toFixed(2) : dealPrice.toFixed(2);
         return {
           title: item.title || '',
           productLink: item.productLink || item.orderLink || item.couponLink || '',
@@ -2839,6 +3638,7 @@
           manualTjb: item.manualTjb || '',
           gid: item.id || item.gid || '',
           dealPrice: dealPrice.toFixed(2),
+          qty: String(qtyNum),
           commissionRate: item.commission_rate || '',
           goodsSign: item.goodsSign || '',
           mall: item.mall || '淘宝',
