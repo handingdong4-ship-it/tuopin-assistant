@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.3.4
+// @version      2.3.5
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -26,6 +26,7 @@
 // @connect      go.smzdm.com
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
+// @connect      commission-bgm.agentdevops.zdm.net
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -1590,7 +1591,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'https://mindpad-bgm.smzdm.com/commission/?url=' + encodeURIComponent(productUrl),
+          url: 'http://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
@@ -2241,6 +2242,29 @@
       return true;
     }
 
+    // 填充带时间的 datetimepicker 字段（dateFormat 'yy-mm-dd' + timeFormat 'HH:mm:ss'）。
+    // 直接 setInputValue 触发 blur 时，插件的 _setDateFromField 可能丢掉时间部分，
+    // 故优先用 jQuery timepicker addon 的 setDate API，并兜底校验时间仍在。
+    function setDateTimeField(el, val) {
+      if (!el || val === undefined || val === null) return false;
+      val = String(val);
+      var usedApi = false;
+      try {
+        if (window.$ && window.$(el).datetimepicker) {
+          window.$(el).datetimepicker('setDate', val);
+          usedApi = true;
+        }
+      } catch (e) { /* 回退到原生赋值 */ }
+      // 无论是否用 API，都兜底：若值丢了时间部分，直接补写并触发 change
+      if ((el.value || '').indexOf(':') < 0) {
+        var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+        if (ns && ns.set) ns.set.call(el, val); else el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return true;
+    }
+
     function clickRadioByText(text) {
       var labels = document.querySelectorAll('.el-radio__label, .el-radio, label, span');
       for (var i = 0; i < labels.length; i++) {
@@ -2452,7 +2476,7 @@
           }
         }
       }
-      if (rewardField) { setInputValue(rewardField, dates.rewardTimeStr); subsidyLog('✓ 返补贴时间'); }
+      if (rewardField) { setDateTimeField(rewardField, dates.rewardTimeStr); subsidyLog('✓ 返补贴时间'); }
 
       // 17. 邮箱 - 从GM存储读取
       var savedEmail = GM_getValue('tuopin_selected_email', '');
