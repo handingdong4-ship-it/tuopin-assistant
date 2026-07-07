@@ -27,6 +27,7 @@
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
 // @connect      commission-bgm.agentdevops.zdm.net
+// @connect      10.45.148.12
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -1583,7 +1584,9 @@
       }
     }
 
-    // 通过 mind-pad 中转查询 DCC 佣金（接 get-commission-rate skill，绕内网不可达）
+    // 通过 Kong 网关中转查询 DCC 佣金。
+    // 直连 Kong 内网 IP + Host 头，绕过 commission-bgm.agentdevops.zdm.net 的公网 DNS 解析超时。
+    // 装了插件且能访问公司内网 10.45.148.12 的同事即可查询，无需改 DNS。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
       var rateBox = document.getElementById('ds-commission-rate');
@@ -1591,7 +1594,8 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'http://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+          url: 'http://10.45.148.12:8000/commission/?url=' + encodeURIComponent(productUrl),
+          headers: { 'Host': 'commission-bgm.agentdevops.zdm.net' },
           timeout: 15000,
           onload: function(resp) {
             try {
