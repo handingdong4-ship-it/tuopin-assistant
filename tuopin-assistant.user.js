@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.4.2
+// @version      2.4.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1463,16 +1463,12 @@
       h += '<div id="ds-body" style="display:' + bodyDisplay + ';">';
       h += '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">商品名</label>' +
         '<input id="ds-title" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
-        '<div style="display:flex;gap:6px;margin-bottom:4px;">' +
-        '<div style="flex:1;"><label style="color:#666;font-size:11px;">到手价</label>' +
-        '<input id="ds-deal" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
-        '<div style="flex:1;"><label style="color:#666;font-size:11px;">折单价</label>' +
-        '<input id="ds-unit" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div></div>' +
-        '<div style="display:flex;gap:6px;margin-bottom:4px;">' +
-        '<div style="flex:1;"><label style="color:#666;font-size:11px;">补贴金额</label>' +
-        '<input id="ds-subsidy" type="text" placeholder="0" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
-        '<div style="flex:1;"><label style="color:#666;font-size:11px;">件数</label>' +
-        '<input id="ds-qty" type="text" value="1" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div></div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-bottom:4px;">' +
+        '<div style="display:flex;align-items:center;gap:4px;"><label style="color:#666;font-size:11px;white-space:nowrap;min-width:36px;">到手价</label><input id="ds-deal" type="text" style="flex:1;min-width:0;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '<div style="display:flex;align-items:center;gap:4px;"><label style="color:#666;font-size:11px;white-space:nowrap;min-width:36px;">折单价</label><input id="ds-unit" type="text" style="flex:1;min-width:0;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '<div style="display:flex;align-items:center;gap:4px;"><label style="color:#666;font-size:11px;white-space:nowrap;min-width:36px;">补贴</label><input id="ds-subsidy" type="text" placeholder="0" style="flex:1;min-width:0;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '<div style="display:flex;align-items:center;gap:4px;"><label style="color:#666;font-size:11px;white-space:nowrap;min-width:36px;">件数</label><input id="ds-qty" type="text" value="1" style="flex:1;min-width:0;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '</div>' +
         '<div style="margin-bottom:4px;font-size:11px;line-height:1.6;">' +
         '<span>佣比：<span id="ds-commission-rate" style="color:#52c41a;font-weight:600;">-</span></span>' +
         '<span style="margin-left:12px;">订单佣金：<span id="ds-commission-calc" style="color:#52c41a;font-weight:600;">-</span></span>' +
