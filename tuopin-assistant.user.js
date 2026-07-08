@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.3.8
+// @version      2.3.9
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -28,11 +28,79 @@
 // @connect      mindpad-bgm.smzdm.com
 // @connect      commission-bgm.agentdevops.zdm.net
 // @connect      10.45.148.12
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
+
+  // ===== 版本更新检查：拉 GitHub raw 比对版本，发现新版在右上角弹更新横幅 =====
+  (function checkUpdate() {
+    var RAW_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
+    var DL_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
+    var curVer = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : '';
+    if (!curVer) return;
+
+    // 版本号比较：a > b 返回 1，a < b 返回 -1，相等 0
+    function cmpVer(a, b) {
+      var pa = String(a).split('.').map(function(n) { return parseInt(n, 10) || 0; });
+      var pb = String(b).split('.').map(function(n) { return parseInt(n, 10) || 0; });
+      var len = Math.max(pa.length, pb.length);
+      for (var i = 0; i < len; i++) {
+        var x = pa[i] || 0, y = pb[i] || 0;
+        if (x > y) return 1;
+        if (x < y) return -1;
+      }
+      return 0;
+    }
+
+    function showBanner(newVer) {
+      if (document.getElementById('tuopin-update-banner')) return;
+      var banner = document.createElement('div');
+      banner.id = 'tuopin-update-banner';
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:linear-gradient(90deg,#ff7a00,#ff4757);color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.4;padding:8px 16px;display:flex;align-items:center;justify-content:center;gap:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+      banner.innerHTML =
+        '<span>🔔 拓品助手有新版本 <b>v' + newVer + '</b>（当前 v' + curVer + '），建议更新</span>' +
+        '<a id="tuopin-update-go" href="' + DL_URL + '" target="_blank" style="background:#fff;color:#ff4757;padding:3px 12px;border-radius:4px;text-decoration:none;font-weight:600;">点此更新</a>' +
+        '<span id="tuopin-update-close" style="cursor:pointer;font-size:16px;padding:0 4px;opacity:0.85;">✕</span>';
+      (document.body || document.documentElement).appendChild(banner);
+      document.getElementById('tuopin-update-close').onclick = function() {
+        banner.remove();
+        // 关闭后当天不再对该版本弹（避免每次开页面都烦）
+        try { GM_setValue('tuopin_update_dismiss', newVer + '|' + new Date().toDateString()); } catch (e) {}
+      };
+    }
+
+    function doCheck() {
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url: RAW_URL + '?_t=' + Date.now(),  // 绕过 CDN 缓存
+          timeout: 12000,
+          onload: function(resp) {
+            try {
+              var m = (resp.responseText || '').match(/@version\s+([\d.]+)/);
+              if (!m) return;
+              var remoteVer = m[1];
+              if (cmpVer(remoteVer, curVer) <= 0) return; // 远程不比本地新
+              // 用户当天关过这个版本的提示就不再弹
+              var dismiss = '';
+              try { dismiss = GM_getValue('tuopin_update_dismiss', ''); } catch (e) {}
+              if (dismiss === remoteVer + '|' + new Date().toDateString()) return;
+              if (document.body) showBanner(remoteVer);
+              else window.addEventListener('DOMContentLoaded', function() { showBanner(remoteVer); });
+            } catch (e) {}
+          },
+          onerror: function() {},
+          ontimeout: function() {}
+        });
+      } catch (e) {}
+    }
+
+    // 延迟 3s 检查，避开页面初始化高峰
+    setTimeout(doCheck, 3000);
+  })();
 
   // ===== 公共：右上角堆叠容器（汇总面板在上，各页面进度面板在下）=====
   function getRightStack() {
