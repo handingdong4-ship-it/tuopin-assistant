@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.3.5
+// @version      2.3.7
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1585,8 +1585,8 @@
     }
 
     // 通过 Kong 网关中转查询 DCC 佣金。
-    // 直连 Kong 内网 IP + Host 头，绕过 commission-bgm.agentdevops.zdm.net 的公网 DNS 解析超时。
-    // 装了插件且能访问公司内网 10.45.148.12 的同事即可查询，无需改 DNS。
+    // 走公网域名 commission-bgm.agentdevops.zdm.net（HTTPS），公司网络下均可访问。
+    // relay 侧做公司网段校验，仅公司内网可查。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
       var rateBox = document.getElementById('ds-commission-rate');
@@ -1594,8 +1594,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'http://10.45.148.12:8000/commission/?url=' + encodeURIComponent(productUrl),
-          headers: { 'Host': 'commission-bgm.agentdevops.zdm.net' },
+          url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
