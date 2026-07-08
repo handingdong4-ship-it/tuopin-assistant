@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.4.1
+// @version      2.4.2
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -35,14 +35,13 @@
 (function () {
   'use strict';
 
-  // ===== 版本更新检查：拉 GitHub raw 比对版本，发现新版在右上角弹更新横幅 =====
+  // ===== 版本更新检查：拉服务端 version.json 比对版本，发现新版在右上角弹更新横幅 =====
   (function checkUpdate() {
-    var RAW_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
+    var VERSION_URL = 'https://mindpad-bgm.smzdm.com/tuopin-version.json';
     var DL_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
     var curVer = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : '';
     if (!curVer) return;
 
-    // 版本号比较：a > b 返回 1，a < b 返回 -1，相等 0
     function cmpVer(a, b) {
       var pa = String(a).split('.').map(function(n) { return parseInt(n, 10) || 0; });
       var pb = String(b).split('.').map(function(n) { return parseInt(n, 10) || 0; });
@@ -67,7 +66,6 @@
       (document.body || document.documentElement).appendChild(banner);
       document.getElementById('tuopin-update-close').onclick = function() {
         banner.remove();
-        // 关闭后当天不再对该版本弹（避免每次开页面都烦）
         try { GM_setValue('tuopin_update_dismiss', newVer + '|' + new Date().toDateString()); } catch (e) {}
       };
     }
@@ -76,15 +74,13 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: RAW_URL + '?_t=' + Date.now(),  // 绕过 CDN 缓存
-          timeout: 12000,
+          url: VERSION_URL + '?_t=' + Date.now(),
+          timeout: 8000,
           onload: function(resp) {
             try {
-              var m = (resp.responseText || '').match(/@version\s+([\d.]+)/);
-              if (!m) return;
-              var remoteVer = m[1];
-              if (cmpVer(remoteVer, curVer) <= 0) return; // 远程不比本地新
-              // 用户当天关过这个版本的提示就不再弹
+              var data = JSON.parse(resp.responseText || '{}');
+              var remoteVer = data.version || '';
+              if (!remoteVer || cmpVer(remoteVer, curVer) <= 0) return;
               var dismiss = '';
               try { dismiss = GM_getValue('tuopin_update_dismiss', ''); } catch (e) {}
               if (dismiss === remoteVer + '|' + new Date().toDateString()) return;
