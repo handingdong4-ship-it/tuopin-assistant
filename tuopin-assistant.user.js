@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.3.7
+// @version      2.3.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -40,7 +40,7 @@
     if (!s) {
       s = document.createElement('div');
       s.id = 'tuopin-rt-stack';
-      s.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;';
+      s.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999;display:flex;flex-direction:column;gap:8px;align-items:flex-end;max-height:calc(100vh - 20px);overflow-y:auto;overflow-x:hidden;padding:2px 4px 8px 2px;';
       document.body.appendChild(s);
     }
     return s;
