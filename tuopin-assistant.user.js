@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.3.9
+// @version      2.4.1
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1458,34 +1458,34 @@
       var panel = document.createElement('div');
       panel.id = 'tuopin-direct-panel';
       panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:12px;width:240px;font-family:-apple-system,sans-serif;font-size:13px;';
-      var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (collapsed ? '0' : '8px') + ';">' +
+      var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (collapsed ? '0' : '6px') + ';">' +
         '<div style="display:flex;align-items:center;gap:6px;">' +
         '<button id="ds-toggle" style="border:none;background:none;cursor:pointer;color:#666;font-size:11px;line-height:1;padding:0;">' + arrow + '</button>' +
         '<span style="font-weight:600;font-size:13px;color:#ff7a00;">去补贴</span></div>' +
-        '<span style="font-size:10px;color:#999;">折叠后需手动展开</span></div>';
+        '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>';
       var bodyDisplay = collapsed ? 'none' : 'block';
       h += '<div id="ds-body" style="display:' + bodyDisplay + ';">';
-      h += '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;">商品名</label>' +
+      h += '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">商品名</label>' +
         '<input id="ds-title" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
-        '<div style="display:flex;gap:6px;margin-bottom:6px;">' +
+        '<div style="display:flex;gap:6px;margin-bottom:4px;">' +
         '<div style="flex:1;"><label style="color:#666;font-size:11px;">到手价</label>' +
         '<input id="ds-deal" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
         '<div style="flex:1;"><label style="color:#666;font-size:11px;">折单价</label>' +
         '<input id="ds-unit" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div></div>' +
-        '<div style="display:flex;gap:6px;margin-bottom:6px;">' +
+        '<div style="display:flex;gap:6px;margin-bottom:4px;">' +
         '<div style="flex:1;"><label style="color:#666;font-size:11px;">补贴金额</label>' +
         '<input id="ds-subsidy" type="text" placeholder="0" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
         '<div style="flex:1;"><label style="color:#666;font-size:11px;">件数</label>' +
         '<input id="ds-qty" type="text" value="1" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div></div>' +
-        '<div style="margin-bottom:6px;font-size:11px;line-height:1.8;">' +
+        '<div style="margin-bottom:4px;font-size:11px;line-height:1.6;">' +
         '<span>佣比：<span id="ds-commission-rate" style="color:#52c41a;font-weight:600;">-</span></span>' +
         '<span style="margin-left:12px;">订单佣金：<span id="ds-commission-calc" style="color:#52c41a;font-weight:600;">-</span></span>' +
         '</div>' +
-        '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;">原文案</label>' +
-        '<textarea id="ds-copy-orig" rows="3" readonly style="width:100%;padding:6px;border:1px solid #eee;border-radius:4px;font-size:11px;line-height:1.4;resize:vertical;box-sizing:border-box;background:#f9f9f9;color:#999;"></textarea></div>' +
-        '<div style="margin-bottom:8px;"><label style="color:#666;font-size:11px;">新文案</label>' +
-        '<textarea id="ds-copy" rows="4" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;font-size:12px;line-height:1.5;resize:vertical;box-sizing:border-box;"></textarea></div>' +
-        '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;">标签（可多选）</label>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">原文案</label>' +
+        '<textarea id="ds-copy-orig" rows="2" readonly style="width:100%;padding:5px 6px;border:1px solid #eee;border-radius:4px;font-size:11px;line-height:1.4;resize:vertical;box-sizing:border-box;background:#f9f9f9;color:#999;"></textarea></div>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">新文案</label>' +
+        '<textarea id="ds-copy" rows="2" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;line-height:1.5;resize:vertical;box-sizing:border-box;"></textarea></div>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">标签（可多选）</label>' +
         '<div id="ds-tag-trigger" style="border:1px solid #ddd;border-radius:4px;padding:4px 6px;cursor:pointer;font-size:12px;min-height:22px;display:flex;justify-content:space-between;align-items:center;background:#fff;">' +
           '<span id="ds-tag-summary" style="color:#bbb;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">请选择标签</span>' +
           '<span style="color:#999;font-size:10px;">▾</span>' +
@@ -1495,14 +1495,14 @@
           '<input id="ds-tag-input" type="text" placeholder="添加标签，如今日必买" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
           '<button id="ds-tag-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
         '</div></div>' +
-        '<div style="margin-bottom:8px;"><label style="color:#666;font-size:11px;">表单邮箱</label>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">表单邮箱</label>' +
         '<select id="ds-email-select" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;box-sizing:border-box;"><option value="">请选择邮箱</option></select>' +
         '<div style="display:flex;gap:4px;">' +
           '<input id="ds-email-input" type="text" placeholder="添加邮箱" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
           '<button id="ds-email-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
         '</div></div>' +
         '<button id="ds-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">去补贴</button>' +
-        '<div id="tuopin-direct-log" style="margin-top:6px;max-height:120px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:6px;font-size:11px;line-height:1.5;color:#666;display:none;"></div>';
+        '<div id="tuopin-direct-log" style="margin-top:4px;max-height:120px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:5px 6px;font-size:11px;line-height:1.5;color:#666;display:none;"></div>';
       h += '</div>';
       panel.innerHTML = h;
       getRightStack().appendChild(panel);
