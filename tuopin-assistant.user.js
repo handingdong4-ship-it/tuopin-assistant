@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.3.9
+// @version      3.5.0
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3282,13 +3282,14 @@
       var IMG_MODEL_NAMES = ['即梦5.0', 'GPT1.5'];
       var IMG_RES = '512px';
       // 6张图各自的拍摄角度，确保多角度出图
+      // 6个分镜头，idx 0-5 一一对应，剪辑时按顺序拼接即成完整视频
       var IMG_ANGLES = [
-        '俯拍平铺视角，商品平铺展示',
-        '手持特写镜头，突出商品质感细节',
-        '侧面45度斜拍，搭配场景化背景',
-        '正面平拍视角，干净简洁背景',
-        '斜俯45度视角，产品自然堆叠摆放',
-        '近景微距特写，截面纹理质感清晰'
+        '【镜头1·建立景】广角远景，商品置于完整场景环境中，交代空间与氛围，背景与场景词呼应，构图留白充裕',
+        '【镜头2·中景入场】商品主体占画面1/2，人手或道具自然入画，背景场景清晰可见，有故事感与生活气息',
+        '【镜头3·产品正面】正面平视特写，商品充满画面，品牌/包装/颜色清晰，光线均匀干净，突出产品颜值',
+        '【镜头4·质感微距】极近微距，聚焦商品最具质感的局部（纹理/截面/材质），背景完全虚化，细节震撼',
+        '【镜头5·俯拍平铺】正上方垂直俯视，商品平铺摆放，道具点缀，构图饱满对称，电商平铺风格',
+        '【镜头6·斜侧收尾】斜侧45度低角度仰拍，商品有空间纵深感，光线从侧后方打出轮廓光，氛围收尾'
       ];
       var VID_MODELS = [
         { id: 'i2v_2_2_20260402_v3', name: 'Seedance2.0Fast', time: 5, res: '480p' },
@@ -3321,6 +3322,11 @@
       function coSaveHistory(scene, prompts, images, videos) {
         try {
           var hist = JSON.parse(GM_getValue(CO_HIST_KEY, '[]'));
+          var today = new Date().toISOString().slice(0, 10);
+          // 同文章同天的记录覆盖，不追加
+          hist = hist.filter(function(h) {
+            return !(h.aid === CO_ARTICLE_ID && (h.date || '').slice(0, 10) === today);
+          });
           hist.unshift({
             aid: CO_ARTICLE_ID, url: location.href,
             date: new Date().toISOString().slice(0, 16).replace('T', ' '),
@@ -3383,6 +3389,13 @@
           // 清理过期
           var cutoff = Date.now() - 3 * 864e5;
           all = all.filter(function (h) { return h.date && new Date(h.date.replace(' ', 'T')).getTime() > cutoff; });
+          // 去重：同 aid + 同日期只保留最新一条（已按 unshift 顺序排，第一条最新）
+          var seen = {};
+          all = all.filter(function(h) {
+            var key = (h.aid || '') + '_' + (h.date || '').slice(0, 10);
+            if (seen[key]) return false;
+            seen[key] = true; return true;
+          });
           if (all.length > 15) all = all.slice(0, 15);
           GM_setValue(CO_HIST_KEY, JSON.stringify(all));
           // 只保留当前文章
@@ -3455,6 +3468,7 @@
       // ===== 任务时段共享端点（commission-relay /taskslots，多同事防撞车）=====
       var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
       var coSlotsCache = { date: '', slots: [], claimed: [] };
+      var coImgModelIdx = 0; // 图生图选中模型索引（0=即梦5.0, 1=GPT），面板按钮切换
       function coTodayStr() {
         var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
@@ -3690,29 +3704,45 @@
         if (productImg) { var u = productImg + (productImg.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; imgUrls.push(u); }
         var title = coGetArticleTitle ? coGetArticleTitle() : '';
         var stylePrompt = prompt + coGetStyleSuffix(title);
-        // 前3张(idx 0-2)用即梦，后3张(idx 3-5)用GPT
-        var modelIdx = Math.floor(idx / 3) % IMG_MODELS.length;
+        var modelIdx = coImgModelIdx % IMG_MODELS.length;
         var payload = {
+          _api_key: apiKey,
           model: IMG_MODELS[modelIdx], prompt: stylePrompt, resolution: IMG_RES,
           upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc', public_host: 0 },
           image_urls: imgUrls
         };
+        // 提交到 relay，relay 后台调 gw-openapi，不受浏览器刷新影响
         GM_xmlhttpRequest({
-          method: 'POST', url: GW + '/ai-omni-auth/pictures/create_img',
-          headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-          data: JSON.stringify(payload), timeout: 120000,
-          onload: function (r) {
+          method: 'POST', url: RELAY + '/pictures/submit',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify(payload), timeout: 15000,
+          onload: function(r) {
             try {
               var j = JSON.parse(r.responseText);
-              if (j.error_code !== 0) return onErr(j.error_msg || '生成失败');
-              var d = j.data;
-              var url = Array.isArray(d) ? d[0] : (d && d.file_url) || d;
-              if (!url) return onErr('返回无图: ' + (r.responseText || '').slice(0, 200));
-              onOk(String(url));
-            } catch (e) { onErr('解析失败: ' + e.message); }
+              if (!j.ok) return onErr(j.error || '提交失败');
+              var taskId = j.task_id;
+              // 轮询 relay 结果
+              var n = 0;
+              var itv = setInterval(function() {
+                if (++n > 50) { clearInterval(itv); onErr('图片生成超时'); return; }
+                GM_xmlhttpRequest({
+                  method: 'GET', url: RELAY + '/pictures/result?task_id=' + taskId, timeout: 8000,
+                  onload: function(r2) {
+                    try {
+                      var j2 = JSON.parse(r2.responseText);
+                      if (!j2.ok) { clearInterval(itv); onErr(j2.error || '查询失败'); return; }
+                      if (j2.status === 'done') { clearInterval(itv); onOk(j2.url); }
+                      else if (j2.status === 'error') { clearInterval(itv); onErr(j2.error || '生成失败'); }
+                      // pending: 继续等
+                    } catch(e) {}
+                  },
+                  onerror: function() {}, ontimeout: function() {}
+                });
+              }, 4000);
+            } catch(e) { onErr('解析失败: ' + e.message); }
           },
-          onerror: function () { onErr('请求失败'); },
-          ontimeout: function () { onErr('请求超时'); }
+          onerror: function() { onErr('relay 请求失败'); },
+          ontimeout: function() { onErr('relay 超时'); }
         });
       }
 
@@ -3733,7 +3763,7 @@
               if (j.error_code !== 0) return onErr(j.error_msg || '提交失败');
               var tid = j.data && j.data.task_id;
               if (!tid) return onErr('无 task_id: ' + (r.responseText || '').slice(0, 200));
-              onOk(tid);
+              onOk(tid, vm.id);
             } catch (e) { onErr('解析失败: ' + e.message); }
           },
           onerror: function () { onErr('请求失败'); },
@@ -3741,7 +3771,7 @@
         });
       }
       // 轮询视频状态：task_id → video_url
-      function coPollVideo(taskId, onDone, onErr) {
+      function coPollVideo(taskId, modelId, onDone, onErr) {
         var apiKey = GM_getValue(CO_KEY, '');
         var n = 0;
         var itv = setInterval(function () {
@@ -3749,7 +3779,7 @@
           GM_xmlhttpRequest({
             method: 'POST', url: GW + '/ai-omni-auth/video/get_task_status',
             headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-            data: JSON.stringify({ model: VID_MODEL, task_id: taskId }),
+            data: JSON.stringify({ model: modelId, task_id: taskId }),
             timeout: 20000,
             onload: function (r) {
               try {
@@ -3809,11 +3839,12 @@
                   setTimeout(function () { addTagBtn.click(); }, 300);
                 }
               } catch(e) {}
-              // 3. 循环点保存直到"保存成功"
+              // 3. 循环点保存直到"保存成功"；若多次无反应则刷新重试一次
               setTimeout(function () {
-                var tries = 0;
+                var tries = 0, reloaded = false;
                 var itv = setInterval(function () {
                   try {
+                    if (!doc || !doc.body) return; // iframe 刷新中，等待
                     var bodyText = doc.body.innerText || '';
                     if (bodyText.indexOf('保存成功') >= 0) {
                       clearInterval(itv); clearTimeout(timeout);
@@ -3822,17 +3853,34 @@
                       return;
                     }
                     if (tries++ > 12) {
+                      if (!reloaded) {
+                        // 无反应：移除当前 iframe，重新整体执行一次
+                        reloaded = true;
+                        clearInterval(itv); clearTimeout(timeout);
+                        try { document.body.removeChild(iframe); } catch(e2) {}
+                        coDoConfirmInPage(imgUrl, articleId, onDone);
+                        return;
+                      }
                       clearInterval(itv); clearTimeout(timeout);
                       document.body.removeChild(iframe);
                       onDone(false, '保存超时');
                       return;
                     }
-                    // 处理弹窗（确认/确定）
+                    // 处理弹窗：优先"忽略提醒"，其次"确定/确认"
                     var popBtns = doc.querySelectorAll('input[type="button"], input[type="submit"], button');
+                    var popFound = false;
                     for (var j = 0; j < popBtns.length; j++) {
                       var pv = (popBtns[j].value || popBtns[j].textContent || '').trim();
-                      if ((pv === '确定' || pv === '确认') && popBtns[j].offsetParent !== null) {
-                        popBtns[j].click(); return;
+                      if (pv.indexOf('忽略') >= 0 && popBtns[j].offsetParent !== null) {
+                        popBtns[j].click(); popFound = true; break;
+                      }
+                    }
+                    if (!popFound) {
+                      for (var j2 = 0; j2 < popBtns.length; j2++) {
+                        var pv2 = (popBtns[j2].value || popBtns[j2].textContent || '').trim();
+                        if ((pv2 === '确定' || pv2 === '确认') && popBtns[j2].offsetParent !== null) {
+                          popBtns[j2].click(); popFound = true; break;
+                        }
                       }
                     }
                     // 点保存修改
@@ -3908,7 +3956,25 @@
           + '<input id="tuopin-co-scene" type="text" placeholder="如：露营、聚会" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
           + '</div>'
           + '<button id="tuopin-co-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;">优化头图</button>'
-          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">图生图</div>'
+          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">参考图</div>'
+          + '<div id="tuopin-co-refimg-area" style="border:1px dashed #ddd;border-radius:6px;padding:6px;margin-bottom:8px;background:#fafafa;">'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">'
+          + '<img id="tuopin-co-refimg-preview" src="" style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid #eee;display:none;">'
+          + '<div id="tuopin-co-refimg-empty" style="width:48px;height:48px;border-radius:4px;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:18px;flex-shrink:0;">+</div>'
+          + '<div style="flex:1;min-width:0;">'
+          + '<input id="tuopin-co-refimg-url" type="text" placeholder="粘贴图片URL" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;margin-bottom:4px;">'
+          + '<div style="display:flex;gap:4px;">'
+          + '<label id="tuopin-co-refimg-upload-label" style="flex:1;padding:3px 6px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:11px;color:#666;cursor:pointer;text-align:center;">本地上传<input id="tuopin-co-refimg-file" type="file" accept="image/*" style="display:none;"></label>'
+          + '<button id="tuopin-co-refimg-reset" style="flex:1;padding:3px 6px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:11px;color:#666;cursor:pointer;">重置文章图</button>'
+          + '</div></div></div>'
+          + '<div id="tuopin-co-refimg-tip" style="font-size:10px;color:#aaa;margin-top:2px;word-break:break-all;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>'
+          + '</div>'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">'
+          + '<div style="color:#999;font-size:10px;">图生图</div>'
+          + '<div style="display:flex;gap:4px;">'
+          + '<button id="co-img-model-0" data-midx="0" style="padding:2px 8px;border-radius:10px;border:1px solid #ff7a00;background:#ff7a00;color:#fff;font-size:10px;cursor:pointer;">即梦5.0</button>'
+          + '<button id="co-img-model-1" data-midx="1" style="padding:2px 8px;border-radius:10px;border:1px solid #ddd;background:#fff;color:#999;font-size:10px;cursor:pointer;">GPT</button>'
+          + '</div></div>'
           + '<div id="tuopin-co-images" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px;"></div>'
           + '<div id="tuopin-co-prompts" style="margin-bottom:8px;"></div>'
           + '<div style="color:#999;font-size:10px;margin-bottom:4px;">图生视频</div>'
@@ -4394,12 +4460,14 @@
 
           // 预先算好完整文案（与 task-bgm 自动填表保持一致）
           var articleTitle = coGetArticleTitle ? coGetArticleTitle() : '';
-          var taskName = articleTitle.replace(/[【】\[\]「」『』]/g, '').slice(0, 7);
+          // 剥掉标题前缀（今日必买：/ 爆卖补货：/ 国家补贴：等），只取商品名部分
+          var articleTitleClean = articleTitle.replace(/^[\s\S]*?[：:]\s*/, '').trim() || articleTitle;
+          var taskName = articleTitleClean.replace(/[【】\[\]「」『』]/g, '').slice(0, 7);
           var priceMatch = (document.body.innerText || '').match(/到手价([\d.]+)元/);
           var price = priceMatch ? priceMatch[1] : '';
-          var productName = articleTitle.replace(/.*到手价[\d.]*元[，,]?/, '')
+          var productName = articleTitleClean.replace(/.*到手价[\d.]*元[，,]?/, '')
             .replace(/淘金币到手价[\d.]+元[，,]?/, '').replace(/折[\d.]+元\/件[，,]?/, '')
-            .replace(/^[\s,，]+/, '').trim() || articleTitle;
+            .replace(/^[\s,，]+/, '').trim() || articleTitleClean;
           var pricePart = price ? ('，到手价' + price + '元') : '';
           var actionPart = '，点赞收藏获得抽奖';
           var maxNameLen = 42 - pricePart.length - actionPart.length;
@@ -4458,6 +4526,14 @@
         panel.addEventListener('change', function (e) {
           if (e.target && e.target.classList.contains('co-select-cb')) coUpdateConfirmBtn();
         });
+        // 设为参考图（事件委托）
+        panel.addEventListener('click', function (e) {
+          var btn = e.target && e.target.classList.contains('co-set-refimg') ? e.target : null;
+          if (btn) {
+            var url = btn.getAttribute('data-url');
+            if (url) { coRefImgSet(url, '来自图生图'); }
+          }
+        });
         // 确认填入按钮 / 确认视频图按钮
         panel.addEventListener('click', function (e) {
           var tid = e.target && e.target.id;
@@ -4510,17 +4586,17 @@
               var vPrompt = vidPrompts[vi % vidPrompts.length];
               (function(vi, vc2, vm, vPrompt) {
                 coSubmitVideo(vPrompt, selectedUrls, vi,
-                  function (taskId) {
+                  function (taskId, modelId) {
                     coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
                     try {
                       var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
                       var pts = cur.pendingTasks || [];
                       pts = pts.filter(function(p) { return p.idx !== vi; });
-                      pts.push({ idx: vi, taskId: taskId });
+                      pts.push({ idx: vi, taskId: taskId, modelId: modelId });
                       cur.pendingTasks = pts;
                       GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
                     } catch(e) {}
-                    coPollVideo(taskId,
+                    coPollVideo(taskId, modelId,
                       function (vurl) {
                         vc2.style.position = 'relative';
                         vc2.setAttribute('data-co-url', vurl);
@@ -4575,7 +4651,7 @@
           var imgCards = imagesBox2 ? imagesBox2.children : [];
           var ic2 = imgCards[idx];
           if (!ic2) return;
-          var currentImg = coGetArticleImage();
+          var currentImg = coRefImgUrl || coGetArticleImage();
           ic2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">图' + (idx + 1) + ' 重新生成中...</div>';
           coLog('↺ 重新生成图' + (idx + 1));
           coCreateImg(prompt, currentImg, idx,
@@ -4584,11 +4660,14 @@
               ic2.setAttribute('data-co-url', url);
               ic2.innerHTML = '<label style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
                 + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:6px;right:6px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                 + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:4px;display:block;">'
-                + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">模型: ' + (IMG_MODEL_NAMES[Math.floor(idx / 3) % IMG_MODEL_NAMES.length]) + '</div>'
+                + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (idx+1) + '</div>'
                 + '<div style="display:flex;gap:3px;">'
                 + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
                 + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+              ic2.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
+              ic2.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
               coBindCopy(ic2);
               coUpdateConfirmBtn();
               coLog('✓ 图' + (idx + 1) + ' 重新生成完成');
@@ -4631,17 +4710,17 @@
           btn.disabled = true;
           coLog('↺ 重新生成视频' + (idx + 1) + '(' + vm.name + ') 用提示词: ' + prompt.slice(0, 30));
           coSubmitVideo(prompt, selectedUrls, idx,
-            function (taskId) {
+            function (taskId, modelId) {
               coLog('✓ 视频' + (idx + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
               try {
                 var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
                 var pts = cur.pendingTasks || [];
                 pts = pts.filter(function(p) { return p.idx !== idx; });
-                pts.push({ idx: idx, taskId: taskId });
+                pts.push({ idx: idx, taskId: taskId, modelId: modelId });
                 cur.pendingTasks = pts;
                 GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
               } catch(e) {}
-              coPollVideo(taskId,
+              coPollVideo(taskId, modelId,
                 function (vurl) {
                   btn.disabled = false;
                   vc3.style.position = 'relative';
@@ -4726,11 +4805,14 @@
                     ic3.setAttribute('data-co-url', url);
                     ic3.innerHTML = '<label style="position:absolute;top:4px;left:4px;z-index:2;cursor:pointer;">'
                       + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                      + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:4px;right:4px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                       + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
-                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[t.modelIdx % IMG_MODEL_NAMES.length] + '</div>'
+                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[0] + ' · 镜头' + (t.idx+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
                       + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                    ic3.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
+                    ic3.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
                     coBindCopy(ic3);
                   }
                   coImgMeta[t.idx] = { prompt: t.prompt, url: url };
@@ -4759,6 +4841,7 @@
             pending.forEach(function (t) {
               var idx = t.idx;
               var taskId = t.taskId;
+              var modelId = t.modelId || (VID_MODELS[idx % VID_MODELS.length] || {}).id || '';
               // 在视频区插入/更新对应卡片为"轮询中"状态
               var vcards = videosBox2.children;
               var vc = vcards[idx];
@@ -4768,7 +4851,7 @@
                 videosBox2.appendChild(vc);
               }
               vc.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">视频' + (idx + 1) + ' 轮询中...</div>';
-              coPollVideo(taskId,
+              coPollVideo(taskId, modelId,
                 function (vurl) {
                   vc.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:4px;display:block;"></video>'
                     + '<div style="display:flex;gap:3px;">'
@@ -4807,6 +4890,99 @@
         coRenderHistory();
 
         var keyInput = document.getElementById('tuopin-co-key');
+
+        // ── 参考图逻辑 ──
+        var CO_REFIMG_KEY = 'tuopin_refimg_url';
+        var coRefImgUrl = ''; // 当前参考图（URL 或 dataURL）
+
+        function coRefImgSet(url, tip) {
+          coRefImgUrl = url || '';
+          var preview = document.getElementById('tuopin-co-refimg-preview');
+          var empty = document.getElementById('tuopin-co-refimg-empty');
+          var tipEl = document.getElementById('tuopin-co-refimg-tip');
+          var urlInput = document.getElementById('tuopin-co-refimg-url');
+          if (coRefImgUrl) {
+            preview.src = coRefImgUrl;
+            preview.style.display = 'block';
+            empty.style.display = 'none';
+            if (urlInput && !coRefImgUrl.startsWith('data:')) urlInput.value = coRefImgUrl;
+          } else {
+            preview.src = '';
+            preview.style.display = 'none';
+            empty.style.display = 'flex';
+            if (urlInput) urlInput.value = '';
+          }
+          if (tipEl) tipEl.textContent = tip || (coRefImgUrl ? (coRefImgUrl.startsWith('data:') ? '本地文件' : coRefImgUrl.slice(0, 80)) : '');
+        }
+
+        // 默认取当前文章商品图（不持久化，每次打开都用当前文章图）
+        (function() {
+          var articleImg = coGetArticleImage();
+          coRefImgSet(articleImg, '（文章商品图）');
+        })();
+
+        // 粘贴 URL 输入
+        var refUrlInput = document.getElementById('tuopin-co-refimg-url');
+        if (refUrlInput) {
+          refUrlInput.addEventListener('change', function() {
+            var v = this.value.trim();
+            if (v) { coRefImgSet(v); }
+          });
+          // 支持粘贴图片（clipboard image）
+          refUrlInput.addEventListener('paste', function(e) {
+            var items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+            for (var i = 0; i < items.length; i++) {
+              if (items[i].type.indexOf('image') >= 0) {
+                e.preventDefault();
+                var file = items[i].getAsFile();
+                var reader = new FileReader();
+                reader.onload = function(ev) { coRefImgSet(ev.target.result, '粘贴图片'); };
+                reader.readAsDataURL(file);
+                return;
+              }
+            }
+          });
+        }
+
+        // 本地上传
+        var refFileInput = document.getElementById('tuopin-co-refimg-file');
+        if (refFileInput) {
+          refFileInput.addEventListener('change', function() {
+            var file = this.files && this.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function(ev) { coRefImgSet(ev.target.result, '本地：' + file.name); };
+            reader.readAsDataURL(file);
+          });
+        }
+
+        // 重置为文章图
+        var refResetBtn = document.getElementById('tuopin-co-refimg-reset');
+        if (refResetBtn) refResetBtn.onclick = function() {
+          var articleImg = coGetArticleImage();
+          coRefImgSet(articleImg, '（文章商品图）');
+        };
+        // ── end 参考图 ──
+
+        // ── 图生图模型切换 ──
+        coImgModelIdx = 0; // 默认即梦5.0
+        function coUpdateImgModelBtns() {
+          [0, 1].forEach(function(i) {
+            var b = document.getElementById('co-img-model-' + i);
+            if (!b) return;
+            if (i === coImgModelIdx) {
+              b.style.background = '#ff7a00'; b.style.color = '#fff'; b.style.borderColor = '#ff7a00';
+            } else {
+              b.style.background = '#fff'; b.style.color = '#999'; b.style.borderColor = '#ddd';
+            }
+          });
+        }
+        [0, 1].forEach(function(i) {
+          var b = document.getElementById('co-img-model-' + i);
+          if (b) b.onclick = function() { coImgModelIdx = i; coUpdateImgModelBtns(); };
+        });
+        coUpdateImgModelBtns();
         keyInput.value = GM_getValue(CO_KEY, '');
         document.getElementById('tuopin-co-cog').onclick = function () {
           var s = document.getElementById('tuopin-co-settings');
@@ -4825,7 +5001,7 @@
           var apiKey = GM_getValue(CO_KEY, '');
           if (!apiKey) { alert('请先点右上 ⚙ Key 配置 gw-openapi 的 Bearer Key'); return; }
 
-          var img = coGetArticleImage();
+          var img = coRefImgUrl || coGetArticleImage();
           var title = coGetArticleTitle();
           var promptsBox = document.getElementById('tuopin-co-prompts');
           var imagesBox = document.getElementById('tuopin-co-images');
@@ -4906,11 +5082,14 @@
                     ic.setAttribute('data-co-url', url);
                     ic.innerHTML = '<label style="position:absolute;top:4px;left:4px;z-index:2;cursor:pointer;">'
                       + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                      + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:4px;right:4px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                       + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
-                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[Math.floor(i / 3) % IMG_MODEL_NAMES.length] + '</div>'
+                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (i+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
                       + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                    ic.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
+                    ic.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
                     coBindCopy(ic);
                     imgDone++; persist(); checkAll();
                     coLog('✓ 图' + (i + 1) + ' 完成');
@@ -4971,8 +5150,8 @@
         waitTaskVue(function(vue) {
           taskLog('Vue 已就绪，开始填表...');
           var P = tp;
-          // 去掉标题里的价格/到手价等前缀杂质，只保留商品名
-          var rawTitle = P.articleTitle || '';
+          // 去掉标题前缀（今日必买：等），再去价格等杂质，只保留商品名
+          var rawTitle = (P.articleTitle || '').replace(/^[\s\S]*?[：:]\s*/, '').trim() || P.articleTitle || '';
           var productName = rawTitle.replace(/.*到手价[\d.]*元[，,]?/, '')
             .replace(/淘金币到手价[\d.]+元[，,]?/, '')
             .replace(/折[\d.]+元\/件[，,]?/, '')
