@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.3.5
+// @version      3.3.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4209,36 +4209,13 @@
           if (toggle) toggle.onclick = function(){ coTaskDoneExpanded = !coTaskDoneExpanded; coRenderTaskDoneToday(); };
         }
 
-        // 本地缓存键（slots + claimed 一起存，打开页面秒渲染）
-        var CO_SLOTS_CACHE_KEY = 'tuopin_slots_cache';
-        function coLoadLocalCache() {
-          try { return JSON.parse(GM_getValue(CO_SLOTS_CACHE_KEY, '{}')); } catch(e) { return {}; }
-        }
-        function coSaveLocalCache(slots, claimed) {
-          GM_setValue(CO_SLOTS_CACHE_KEY, JSON.stringify({ slots: slots, claimed: claimed, at: coTodayStr() }));
-        }
-
-        // 展示用本地缓存（秒显），后台静默拉 relay 更新缓存
-        // 发布任务时单独实时拉 relay（见下方 taskGoBtn.onclick）
+        // 拉 relay 最新状态并渲染（SSE init 事件是主渲染路径，此函数用于手动刷新/管理员推送后强制更新）
         function coRefreshSlots() {
-          // 1. 本地缓存立即渲染（日期替换为今天，防止缓存带着昨天日期）
-          var cache = coLoadLocalCache();
-          if (cache.at === coTodayStr() && (cache.slots || []).length) {
-            var _today = coTodayStr();
-            coSlotsCache.slots = (cache.slots || []).map(function(s){
-              return { startTime: _today + (s.startTime||'').slice(10), endTime: _today + (s.endTime||'').slice(10) };
-            });
-            coSlotsCache.claimed = cache.claimed || [];
-            coRenderSlotsAll();
-            coRenderTaskDoneToday();
-          }
-          // 2. 后台静默拉 relay，有变动则更新缓存并重渲
           var btn = document.getElementById('tuopin-task-go');
           coSlotsGet(function(data){
             var newClaimed = coSlotsCache.claimed || [];
             var todayStr = coTodayStr();
             var rawSlots = coSlotsCache.slots || [];
-            // relay 返回的 slots 日期替换为今天（防止 relay 存的是昨天的日期）
             var newSlots = rawSlots.map(function(s){
               return {
                 startTime: todayStr + (s.startTime||'').slice(10),
@@ -4248,7 +4225,6 @@
             if (!newSlots.length) {
               try {
                 var localPattern = JSON.parse(GM_getValue('tuopin_task_schedule','[]'));
-                // 把本地存储的时间段日期部分替换为今天，实现每天自动复用配置
                 newSlots = localPattern.map(function(s){
                   return {
                     startTime: todayStr + (s.startTime||'').slice(10),
@@ -4258,14 +4234,39 @@
               } catch(e){}
             }
             coSlotsCache.slots = newSlots;
-            coSaveLocalCache(newSlots, newClaimed);
+            coSlotsCache.claimed = newClaimed;
             GM_setValue('tuopin_task_schedule', JSON.stringify(newSlots));
             coRenderSlotsAll();
             coRenderTaskDoneToday();
             if (btn) { btn.disabled = false; btn.textContent = '发布任务'; btn.style.background = '#ff7a00'; }
           });
         }
-        coRefreshSlots();
+
+        // SSE 实时订阅：有人取号时立刻推给所有打开面板的同事
+        var coSSE = null;
+        function coStartSSE() {
+          try {
+            if (coSSE) { try { coSSE.close(); } catch(e){} coSSE = null; }
+            coSSE = new EventSource(RELAY + '/taskslots/stream?date=' + encodeURIComponent(coTodayStr()));
+            coSSE.onmessage = function(e) {
+              try {
+                var d = JSON.parse(e.data);
+                if (d.slots !== undefined) coSlotsCache.slots = d.slots;
+                if (d.claimed !== undefined) coSlotsCache.claimed = d.claimed;
+                coRenderSlotsAll();
+                coRenderTaskDoneToday();
+              } catch(ex) {}
+            };
+            coSSE.onerror = function() { /* 浏览器自动重连 */ };
+          } catch(e) {}
+        }
+        coStartSSE();
+        // 跨天时重启 SSE（防止订阅昨天的 date）
+        var _sseDate = coTodayStr();
+        setInterval(function() {
+          var d = coTodayStr();
+          if (d !== _sseDate) { _sseDate = d; coStartSSE(); }
+        }, 60000);
 
         // 管理员电脑自动静默注册到 relay 名单（复用 taskslots，date="_admin_seats_"）
         if (coIsAdmin) {
@@ -4404,15 +4405,19 @@
           if (productName.length > maxNameLen && maxNameLen > 0) productName = productName.slice(0, maxNameLen);
           var description = productName + pricePart + actionPart;
 
-          // 从共享端找可配时段并 claim（原子），失败则提示
+          // 取号：实时拉 relay 找可配时段，点击即占位，成功后开 task-bgm 执行
           coSlotsGet(function(data){
             var slots = coSlotsCache.slots || [];
             var claimed = coSlotsCache.claimed || [];
             var claimedSet = {};
             claimed.forEach(function(c){ claimedSet[c.startTime] = c; });
-            var nowStr = coNowStr();
-            var slot = slots.filter(function(s){ return !claimedSet[s.startTime] && (s.startTime||'') > nowStr; })
-              .sort(function(a,b){ return (a.startTime||'').localeCompare(b.startTime||''); })[0];
+            var now = new Date();
+            var AVAIL_MIN = 20;
+            var slot = slots.filter(function(s){
+              if (claimedSet[s.startTime]) return false;
+              var endDt = coParseTimeStr(s.endTime);
+              return endDt && (endDt - now) >= AVAIL_MIN * 60 * 1000;
+            }).sort(function(a,b){ return (a.startTime||'').localeCompare(b.startTime||''); })[0];
             if (!slot) {
               alert('当前无可配置时段（今日时段已用完或未配置）');
               return;
@@ -4422,25 +4427,26 @@
               articleId: artId, articleUrl: fullArtUrl, price: price,
               activityId: actId, rewardId: rewardId
             };
+            // 取号：立即写入 relay 占位（原子操作）
             coSlotsClaim(slot.startTime, who, claimInfo, function(claimRes){
               if (!claimRes || !claimRes.ok) {
-                alert('该时段已被他人配置：' + (claimRes && claimRes.claimedBy || '') + '，请刷新后重试');
+                alert('该时段已被他人取号：' + (claimRes && claimRes.claimedBy || '') + '，请刷新后重试');
                 coRefreshSlots();
                 return;
               }
-              var startTime = slot.startTime, endTime = slot.endTime;
-              var now = new Date(); var pn = function(n){return n<10?'0'+n:''+n;};
+              // 取号成功：更新本地缓存（SSE 会同步给其他人）
+              var now2 = new Date(); var pn = function(n){return n<10?'0'+n:''+n;};
               var params = {
                 articleId: artId, articleUrl: fullArtUrl, taskName: taskName,
                 articleTitle: articleTitle, description: description, price: price,
                 activityId: actId, rewardId: rewardId,
-                startTime: startTime, endTime: endTime, who: who,
-                submitTime: now.getFullYear()+'-'+pn(now.getMonth()+1)+'-'+pn(now.getDate())+' '+pn(now.getHours())+':'+pn(now.getMinutes())+':'+pn(now.getSeconds())
+                startTime: slot.startTime, endTime: slot.endTime, who: who,
+                submitTime: now2.getFullYear()+'-'+pn(now2.getMonth()+1)+'-'+pn(now2.getDate())+' '+pn(now2.getHours())+':'+pn(now2.getMinutes())+':'+pn(now2.getSeconds())
               };
               GM_setValue('tuopin_pending_task', JSON.stringify(params));
               coRefreshSlots();
               var logEl = document.getElementById('tuopin-task-log');
-              if (logEl) logEl.textContent = '→ 已锁定时段 ' + startTime.slice(11,16) + '~' + endTime.slice(11,16) + '，新开页面执行中...';
+              if (logEl) logEl.textContent = '✓ 已取号 ' + slot.startTime.slice(11,16) + '~' + slot.endTime.slice(11,16) + '，后台执行中...';
               GM_openInTab('https://task-bgm.smzdm.com/#/task/create?tuopin_task=1', { active: false, insert: true });
             });
           });
@@ -4940,6 +4946,7 @@
 
   // ===== 任务中台 task-bgm.smzdm.com 自动填表 =====
   if (location.hostname === 'task-bgm.smzdm.com') {
+    var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
     var taskParamRaw = (location.hash + location.search).indexOf('tuopin_task=1') >= 0
       ? GM_getValue('tuopin_pending_task', '') : '';
     if (taskParamRaw) {
@@ -5003,8 +5010,10 @@
             if (verifyBtns[2]) verifyBtns[2].click();
             setTimeout(function() {
               var publishBtn = Array.from(document.querySelectorAll('button')).find(function(b) { return b.textContent.trim() === '发布'; });
-              if (publishBtn) { publishBtn.click(); taskLog('✓ 已点击发布'); }
+              if (publishBtn) { publishBtn.click(); taskLog('✓ 已点击发布，等待创建结果...'); }
               else { taskLog('⚠ 未找到发布按钮，请手动发布'); }
+
+              // 取号已在发布任务点击时完成，此处无需再 claim
             }, 1200);
           }, 1000);
         });
