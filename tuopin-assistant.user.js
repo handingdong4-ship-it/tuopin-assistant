@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.5.0
+// @version      3.5.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3746,48 +3746,44 @@
         });
       }
 
-      // 图生视频：多图 + 提示词 → task_id（多图=多镜头合并）
+      // 图生视频：多图 + 提示词 → 提交到 relay，relay 后台调 GW 并轮询，返回 local task_id
       function coSubmitVideo(prompt, imageUrls, modelIdx, onOk, onErr) {
         var apiKey = GM_getValue(CO_KEY, '');
         if (!apiKey) { onErr('未配置 API Key'); return; }
         var vm = VID_MODELS[modelIdx % VID_MODELS.length];
         var urls = imageUrls.map(function(u) { return u + (u.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; });
         GM_xmlhttpRequest({
-          method: 'POST', url: GW + '/ai-omni-auth/video/submit_create_task',
-          headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-          data: JSON.stringify({ model: vm.id, prompt: prompt, video_time: vm.time, aspect_ratio: '16:9', resolution: vm.res, image_urls: urls }),
-          timeout: 30000,
+          method: 'POST', url: RELAY + '/video/submit',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify({ _api_key: apiKey, model: vm.id, prompt: prompt, video_time: vm.time, aspect_ratio: '1:1', resolution: vm.res, image_urls: urls }),
+          timeout: 35000,
           onload: function (r) {
             try {
               var j = JSON.parse(r.responseText);
-              if (j.error_code !== 0) return onErr(j.error_msg || '提交失败');
-              var tid = j.data && j.data.task_id;
-              if (!tid) return onErr('无 task_id: ' + (r.responseText || '').slice(0, 200));
+              if (!j.ok) return onErr(j.error || '提交失败');
+              var tid = j.task_id;
+              if (!tid) return onErr('无 task_id');
               onOk(tid, vm.id);
             } catch (e) { onErr('解析失败: ' + e.message); }
           },
-          onerror: function () { onErr('请求失败'); },
-          ontimeout: function () { onErr('请求超时'); }
+          onerror: function () { onErr('relay 请求失败'); },
+          ontimeout: function () { onErr('relay 超时'); }
         });
       }
-      // 轮询视频状态：task_id → video_url
+      // 轮询视频状态：relay local task_id → video_url
       function coPollVideo(taskId, modelId, onDone, onErr) {
-        var apiKey = GM_getValue(CO_KEY, '');
         var n = 0;
         var itv = setInterval(function () {
-          if (++n > 75) { clearInterval(itv); onErr('轮询超时(5min)'); return; }
+          if (++n > 150) { clearInterval(itv); onErr('轮询超时(10min)'); return; }
           GM_xmlhttpRequest({
-            method: 'POST', url: GW + '/ai-omni-auth/video/get_task_status',
-            headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
-            data: JSON.stringify({ model: modelId, task_id: taskId }),
-            timeout: 20000,
+            method: 'GET', url: RELAY + '/video/result?task_id=' + taskId, timeout: 8000,
             onload: function (r) {
               try {
                 var j = JSON.parse(r.responseText);
-                if (j.error_code !== 0) { clearInterval(itv); onErr(j.error_msg || '查询失败'); return; }
-                var d = j.data || {};
-                if (d.status === 'succeeded') { clearInterval(itv); onDone(d.video_url); }
-                else if (d.status === 'failed') { clearInterval(itv); onErr('视频生成失败'); }
+                if (!j.ok) { clearInterval(itv); onErr(j.error || '查询失败'); return; }
+                if (j.status === 'done') { clearInterval(itv); onDone(j.url); }
+                else if (j.status === 'error') { clearInterval(itv); onErr(j.error || '视频生成失败'); }
+                // pending: 继续等
               } catch (e) {}
             },
             onerror: function () {}, ontimeout: function () {}
@@ -4254,11 +4250,14 @@
                 + '</div>');
               return;
             }
-            items.push('<div style="padding:4px 0;border-bottom:1px solid #f5f5f5;">'
+            items.push('<div style="padding:4px 0;border-bottom:1px solid #f5f5f5;display:flex;align-items:center;gap:4px;">'
+              + '<div style="flex:1;min-width:0;">'
               + '<div style="color:#52c41a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (cl.description||'-') + '</div>'
               + '<div style="color:#999;font-size:9px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
               + timeStr + '&nbsp;·&nbsp;' + (cl.who||'') + '&nbsp;·&nbsp;<a href="' + (cl.articleUrl||'') + '" target="_blank" style="color:#1890ff;">' + (cl.articleId||'-') + '</a>'
               + '&nbsp;¥' + (cl.price||'-') + '</div>'
+              + '</div>'
+              + '<button class="co-task-repub" data-stime="' + (cl.startTime||'') + '" style="flex-shrink:0;padding:2px 6px;font-size:9px;background:#ff7a00;color:#fff;border:none;border-radius:3px;cursor:pointer;white-space:nowrap;">发布</button>'
               + '</div>');
           });
           var html = '<div style="color:#bbb;font-size:9px;margin-bottom:3px;">仅展开活动ID：' + curActId + ' 的明细</div>';
@@ -4273,6 +4272,51 @@
           box.innerHTML = html;
           var toggle = document.getElementById('tuopin-task-done-toggle');
           if (toggle) toggle.onclick = function(){ coTaskDoneExpanded = !coTaskDoneExpanded; coRenderTaskDoneToday(); };
+          // 发布按钮：用已占位的 claimed 数据直接打开 task-bgm，并回显创建结果
+          box.querySelectorAll('.co-task-repub').forEach(function(btn) {
+            btn.onclick = function(e) {
+              e.stopPropagation();
+              var stime = btn.getAttribute('data-stime');
+              var cl2 = (coSlotsCache.claimed || []).filter(function(c) { return c.startTime === stime; })[0];
+              if (!cl2) { alert('找不到该时段信息，请刷新后重试'); return; }
+              var params = {
+                articleId: cl2.articleId || '', articleUrl: cl2.articleUrl || '',
+                taskName: cl2.taskName || '', articleTitle: cl2.description || '',
+                description: cl2.description || '', price: cl2.price || '',
+                activityId: cl2.activityId || '', rewardId: cl2.rewardId || '',
+                startTime: cl2.startTime || '', endTime: cl2.endTime || '', who: cl2.who || ''
+              };
+              // 重置上次结果，按钮进入"发布中"状态
+              GM_setValue('tuopin_task_result', '');
+              btn.disabled = true;
+              btn.textContent = '发布中...';
+              btn.style.background = '#aaa';
+              GM_setValue('tuopin_pending_task', JSON.stringify(params));
+              GM_openInTab('https://task-bgm.smzdm.com/#/task/create?tuopin_task=1', { active: false, insert: true });
+              // 轮询创建结果（最多 45s）
+              var pollCount = 0;
+              var pollItv = setInterval(function() {
+                var raw = GM_getValue('tuopin_task_result', '');
+                if (!raw) { if (++pollCount > 90) { clearInterval(pollItv); btn.disabled = false; btn.textContent = '发布'; btn.style.background = '#ff7a00'; } return; }
+                clearInterval(pollItv);
+                GM_setValue('tuopin_task_result', '');
+                try {
+                  var res = JSON.parse(raw);
+                  var logEl3 = document.getElementById('tuopin-task-log');
+                  if (res.ok) {
+                    btn.style.background = '#52c41a'; btn.textContent = '✓ 成功';
+                    if (logEl3) logEl3.textContent = '✓ 任务创建成功（' + (stime||'').slice(11,16) + '）';
+                  } else {
+                    btn.style.background = '#ff4d4f'; btn.textContent = '✗ 失败';
+                    if (logEl3) logEl3.textContent = '✗ 创建失败（' + (stime||'').slice(11,16) + '）：' + (res.msg || '');
+                  }
+                  btn.disabled = false;
+                  // 5s 后按钮恢复
+                  setTimeout(function() { if (btn.parentNode) { btn.style.background = '#ff7a00'; btn.textContent = '发布'; } }, 5000);
+                } catch(e) {}
+              }, 500);
+            };
+          });
         }
 
         // 拉 relay 最新状态并渲染（SSE init 事件是主渲染路径，此函数用于手动刷新/管理员推送后强制更新）
@@ -4462,17 +4506,15 @@
           var articleTitle = coGetArticleTitle ? coGetArticleTitle() : '';
           // 剥掉标题前缀（今日必买：/ 爆卖补货：/ 国家补贴：等），只取商品名部分
           var articleTitleClean = articleTitle.replace(/^[\s\S]*?[：:]\s*/, '').trim() || articleTitle;
-          var taskName = articleTitleClean.replace(/[【】\[\]「」『』]/g, '').slice(0, 7);
-          var priceMatch = (document.body.innerText || '').match(/到手价([\d.]+)元/);
-          var price = priceMatch ? priceMatch[1] : '';
-          var productName = articleTitleClean.replace(/.*到手价[\d.]*元[，,]?/, '')
-            .replace(/淘金币到手价[\d.]+元[，,]?/, '').replace(/折[\d.]+元\/件[，,]?/, '')
-            .replace(/^[\s,，]+/, '').trim() || articleTitleClean;
-          var pricePart = price ? ('，到手价' + price + '元') : '';
+          var taskName = articleTitleClean.split(/\s+/)[0].replace(/[【】\[\]「」『』]/g, '');
+          var titlePriceMatch = articleTitleClean.match(/([\d.]+)元/);
+          var price = titlePriceMatch ? titlePriceMatch[1] : '';
+          var productName = price ? articleTitleClean.replace(/\s*[\d.]+元.*/, '').trim() : articleTitleClean;
+          var priceSuffix = price ? (' ' + price + '元') : '';
           var actionPart = '，点赞收藏获得抽奖';
-          var maxNameLen = 42 - pricePart.length - actionPart.length;
+          var maxNameLen = 42 - priceSuffix.length - actionPart.length;
           if (productName.length > maxNameLen && maxNameLen > 0) productName = productName.slice(0, maxNameLen);
-          var description = productName + pricePart + actionPart;
+          var description = productName + priceSuffix + actionPart;
 
           // 取号：实时拉 relay 找可配时段，点击即占位，成功后开 task-bgm 执行
           coSlotsGet(function(data){
@@ -4542,13 +4584,72 @@
           e.stopPropagation();
           if (tid === 'tuopin-co-confirm-btn') {
             var checked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
-            if (!checked.length) return alert('请先在图生图区域勾选一张图片');
+            // 图区没选，再找视频区
+            if (!checked.length) checked = panel.querySelectorAll('#tuopin-co-videos .co-select-cb:checked');
+            if (!checked.length) return alert('请先在图生图或视频区域勾选一张图片/视频');
             var confirmUrl = checked[0].getAttribute('data-url');
-            GM_setValue('tuopin_co_confirm_url', confirmUrl);
-            GM_setValue('tuopin_co_confirm_aid', CO_ARTICLE_ID);
-            var editHref = 'http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_co_confirm=1';
-            GM_openInTab(editHref, { active: false, insert: true });
-            coLog('→ 已后台静默打开编辑页进行焦点图替换: ' + confirmUrl.slice(0, 60));
+            var confirmBtn2 = document.getElementById('tuopin-co-confirm-btn');
+            function doConfirmWithUrl(webUrl) {
+              GM_setValue('tuopin_co_confirm_url', webUrl);
+              GM_setValue('tuopin_co_confirm_aid', CO_ARTICLE_ID);
+              var editHref = 'http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_co_confirm=1';
+              GM_openInTab(editHref, { active: false, insert: true });
+              coLog('→ 已后台静默打开编辑页进行焦点图替换: ' + webUrl.slice(0, 80));
+              if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; }
+            }
+            var isVideoUrl = /\.(mp4|mov|webm)(\?|$)/i.test(confirmUrl) || /video/i.test(confirmUrl);
+            if (isVideoUrl) {
+              // 视频 → video_to_gif(webp) → 得到 webp URL 再确认
+              var apiKey2 = GM_getValue(CO_KEY, '');
+              if (!apiKey2) return alert('请先配置 API Key');
+              coLog('⏳ 视频转 webp 中...');
+              if (confirmBtn2) { confirmBtn2.disabled = true; confirmBtn2.textContent = '⏳ 转换中...'; }
+              GM_xmlhttpRequest({
+                method: 'POST', url: GW + '/ai-omni-auth/video/video_to_gif',
+                headers: { 'Authorization': 'Bearer ' + apiKey2, 'Content-Type': 'application/json' },
+                data: JSON.stringify({
+                  type: 2,
+                  video_url: confirmUrl,
+                  fps: 15,
+                  width: 800,
+                  quality: 80,
+                  upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc' }
+                }),
+                timeout: 60000,
+                onload: function(r2) {
+                  try {
+                    var j2 = JSON.parse(r2.responseText);
+                    if (j2.error_code !== 0) { coLog('✗ 视频转 webp 失败: ' + (j2.error_msg || '未知')); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
+                    var webpUrl = (j2.data || {}).gif_url || '';
+                    if (!webpUrl) { coLog('✗ 视频转 webp 返回无 URL'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
+                    coLog('✓ 视频转 webp 完成: ' + webpUrl.slice(0, 60));
+                    doConfirmWithUrl(webpUrl);
+                  } catch(e2) { coLog('✗ 视频转 webp 解析失败: ' + e2.message); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
+                },
+                onerror: function() { coLog('✗ 视频转 webp 请求失败'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } },
+                ontimeout: function() { coLog('✗ 视频转 webp 超时'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
+              });
+            } else if (!confirmUrl.startsWith('http')) {
+              // data: 或 blob: URL，先上传到 relay 转为 web 链接
+              coLog('⏳ 焦点图为本地地址，上传转换中...');
+              if (confirmBtn2) { confirmBtn2.disabled = true; confirmBtn2.textContent = '⏳ 上传中...'; }
+              GM_xmlhttpRequest({
+                method: 'POST', url: RELAY + '/pictures/upload',
+                headers: { 'Content-Type': 'application/json' },
+                data: JSON.stringify({ data_url: confirmUrl }), timeout: 15000,
+                onload: function(r) {
+                  try {
+                    var j = JSON.parse(r.responseText);
+                    if (!j.ok) { coLog('✗ 图片上传失败: ' + (j.error || '未知')); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
+                    doConfirmWithUrl(RELAY + '/img/' + j.img_id);
+                  } catch(e) { coLog('✗ 图片上传解析失败: ' + e.message); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
+                },
+                onerror: function() { coLog('✗ 图片上传 relay 请求失败'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } },
+                ontimeout: function() { coLog('✗ 图片上传超时'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
+              });
+            } else {
+              doConfirmWithUrl(confirmUrl);
+            }
           } else if (tid === 'tuopin-co-confirm-vid-btn') {
             var checkedImgs = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
             if (!checkedImgs.length) { alert('请先在图生图区域勾选要合并成视频的图片'); return; }
@@ -5150,18 +5251,18 @@
         waitTaskVue(function(vue) {
           taskLog('Vue 已就绪，开始填表...');
           var P = tp;
-          // 去掉标题前缀（今日必买：等），再去价格等杂质，只保留商品名
-          var rawTitle = (P.articleTitle || '').replace(/^[\s\S]*?[：:]\s*/, '').trim() || P.articleTitle || '';
-          var productName = rawTitle.replace(/.*到手价[\d.]*元[，,]?/, '')
-            .replace(/淘金币到手价[\d.]+元[，,]?/, '')
-            .replace(/折[\d.]+元\/件[，,]?/, '')
-            .replace(/^[\s,，]+/, '').trim() || rawTitle;
-          // 描述组装：商品名 + 到手价只需xx元 + 动作（最多42字）
-          var pricePart = P.price ? ('，到手价' + P.price + '元') : '';
-          var actionPart = '，点赞收藏获得抽奖';
-          var maxNameLen = 42 - pricePart.length - actionPart.length;
-          if (productName.length > maxNameLen && maxNameLen > 0) productName = productName.slice(0, maxNameLen);
-          var description = productName + pricePart + actionPart;
+          // 描述直接用主页侧传来的 description（已按新规则算好），兜底重算
+          var description = P.description || '';
+          if (!description) {
+            var rawTitle2 = (P.articleTitle || '').replace(/^[\s\S]*?[：:]\s*/, '').trim() || P.articleTitle || '';
+            var titlePriceMatch2 = rawTitle2.match(/([\d.]+)元/);
+            var price2 = titlePriceMatch2 ? titlePriceMatch2[1] : '';
+            var productName2 = price2 ? rawTitle2.replace(/\s*[\d.]+元.*/, '').trim() : rawTitle2;
+            var priceSuffix2 = price2 ? (' ' + price2 + '元') : '';
+            var maxNameLen2 = 42 - priceSuffix2.length - 8;
+            if (productName2.length > maxNameLen2 && maxNameLen2 > 0) productName2 = productName2.slice(0, maxNameLen2);
+            description = productName2 + priceSuffix2 + '，点赞收藏获得抽奖';
+          }
 
           vue.$set(vue.createData, 'activity_ids', P.activityId);
           vue.$set(vue.createData, 'task_name', P.taskName);
@@ -5190,8 +5291,37 @@
             if (verifyBtns[2]) verifyBtns[2].click();
             setTimeout(function() {
               var publishBtn = Array.from(document.querySelectorAll('button')).find(function(b) { return b.textContent.trim() === '发布'; });
-              if (publishBtn) { publishBtn.click(); taskLog('✓ 已点击发布，等待创建结果...'); }
-              else { taskLog('⚠ 未找到发布按钮，请手动发布'); }
+              if (publishBtn) {
+                publishBtn.click();
+                taskLog('✓ 已点击发布，等待创建结果...');
+                // 监听 Element UI toast，检测创建结果
+                GM_setValue('tuopin_task_result', '');
+                var resultChecked = false;
+                var resultItv = setInterval(function() {
+                  if (resultChecked) return;
+                  var successEl = document.querySelector('.el-message--success, .el-notification--success');
+                  var errorEl   = document.querySelector('.el-message--error,   .el-notification--error');
+                  if (successEl) {
+                    resultChecked = true; clearInterval(resultItv);
+                    var msg = (successEl.textContent || '').trim();
+                    GM_setValue('tuopin_task_result', JSON.stringify({ ok: true, startTime: P.startTime, msg: msg || '创建成功' }));
+                    taskLog('✓ 任务创建成功');
+                    setTimeout(function() { try { window.close(); } catch(e2) {} }, 1500);
+                  } else if (errorEl) {
+                    resultChecked = true; clearInterval(resultItv);
+                    var msg2 = (errorEl.textContent || '').trim();
+                    GM_setValue('tuopin_task_result', JSON.stringify({ ok: false, startTime: P.startTime, msg: msg2 || '创建失败' }));
+                    taskLog('✗ 任务创建失败: ' + msg2);
+                  }
+                }, 300);
+                setTimeout(function() {
+                  if (!resultChecked) {
+                    resultChecked = true; clearInterval(resultItv);
+                    GM_setValue('tuopin_task_result', JSON.stringify({ ok: false, startTime: P.startTime, msg: '超时未收到结果，请手动确认' }));
+                    taskLog('⚠ 超时，请手动确认');
+                  }
+                }, 30000);
+              } else { taskLog('⚠ 未找到发布按钮，请手动发布'); }
 
               // 取号已在发布任务点击时完成，此处无需再 claim
             }, 1200);
