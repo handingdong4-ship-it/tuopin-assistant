@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.3.4
+// @version      3.3.5
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3463,6 +3463,13 @@
         var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
       }
+      // 解析 "YYYY-MM-DD HH:MM" 或 "YYYY-MM-DD HH:MM:SS" 为 Date
+      function coParseTimeStr(s) {
+        if (!s) return null;
+        var m = (s+'').match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+        if (!m) return null;
+        return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], 0, 0);
+      }
       function coSlotsGet(cb) {
         var date = coTodayStr();
         GM_xmlhttpRequest({
@@ -3975,6 +3982,25 @@
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
+                // 管理员确认身份后：若 relay 今天还没有时段数据，自动把本地模式推送上去
+                coSlotsGet(function(chk) {
+                  if (chk.ok && !(chk.slots || []).length) {
+                    var todayStr = coTodayStr();
+                    var localPattern = [];
+                    try { localPattern = JSON.parse(GM_getValue('tuopin_task_schedule','[]')); } catch(e){}
+                    if (localPattern.length) {
+                      var todaySlots = localPattern.map(function(s){
+                        return {
+                          startTime: todayStr + (s.startTime||'').slice(10),
+                          endTime: todayStr + (s.endTime||'').slice(10)
+                        };
+                      });
+                      coSlotsSet(todaySlots, function(res){
+                        if (res.ok) { coRefreshSlots(); }
+                      });
+                    }
+                  }
+                });
               }
             } catch(e) {}
           },
@@ -4088,8 +4114,16 @@
           var claimed = coSlotsCache.claimed || [];
           var claimedSet = {};
           claimed.forEach(function(c){ claimedSet[c.startTime] = c; });
+          var now = new Date();
           var nowStr = coNowStr();
-          var avail = slots.filter(function(s){ return !claimedSet[s.startTime] && (s.startTime||'') > nowStr; });
+          var AVAIL_MIN = 20; // 结束时间距现在 >= 20 分钟则可配
+          // 可配：未被认领 且 结束时间距现在 >= 20 分钟
+          var avail = slots.filter(function(s){
+            if (claimedSet[s.startTime]) return false;
+            var endDt = coParseTimeStr(s.endTime);
+            if (!endDt) return false;
+            return (endDt - now) >= AVAIL_MIN * 60 * 1000;
+          });
           avail.sort(function(a,b){ return (a.startTime||'').localeCompare(b.startTime||''); });
 
           // 时段展示列表
@@ -4102,9 +4136,10 @@
               slots.forEach(function(s){
                 var st = (s.startTime||'').slice(11,16), et = (s.endTime||'').slice(11,16);
                 var cl = claimedSet[s.startTime];
-                var past = (s.startTime||'') <= nowStr;
+                var endDt = coParseTimeStr(s.endTime);
+                var expired = !endDt || (endDt - now) < AVAIL_MIN * 60 * 1000;
                 var tag = cl ? '<span style="color:#bbb;">已配('+ (cl.who||'') +')</span>'
-                        : (past ? '<span style="color:#d9d9d9;">已过</span>' : '<span style="color:#52c41a;">可配</span>');
+                        : (expired ? '<span style="color:#d9d9d9;">已过</span>' : '<span style="color:#52c41a;">可配</span>');
                 html += '<div style="padding:3px 0;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;font-size:10px;">'
                   + '<span style="color:#333;">'+st+'~'+et+'</span>'+tag+'</div>';
               });
@@ -4114,11 +4149,15 @@
           // 剩余数
           var numEl = document.getElementById('tuopin-task-remain-num');
           if (numEl) numEl.textContent = avail.length;
-          // 最近可配置
+          // 最近可配置：优先当前进行中时段（已开始且结束时间 >= 20 分钟后），否则取最近未来时段
           var slotEl = document.getElementById('tuopin-task-next-slot-val');
           if (slotEl) {
             if (!avail.length) { slotEl.textContent='无（已无可配时段）'; slotEl.style.color='#ff4d4f'; }
-            else { slotEl.textContent=(avail[0].startTime||'').slice(11,16)+'~'+(avail[0].endTime||'').slice(11,16); slotEl.style.color='#1890ff'; }
+            else {
+              // avail 已按 startTime 升序；取第一个（最早的可配时段，包含当前进行中）
+              slotEl.textContent=(avail[0].startTime||'').slice(11,16)+'~'+(avail[0].endTime||'').slice(11,16);
+              slotEl.style.color='#1890ff';
+            }
           }
         }
 
