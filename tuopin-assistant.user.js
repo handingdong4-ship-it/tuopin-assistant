@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.3.8
+// @version      3.3.9
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4261,6 +4261,7 @@
           } catch(e) {}
         }
         coStartSSE();
+        coRefreshSlots(); // 页面加载时主动拉一次兜底（SSE init 可能延迟）
         // 跨天时重启 SSE（防止订阅昨天的 date）
         var _sseDate = coTodayStr();
         setInterval(function() {
