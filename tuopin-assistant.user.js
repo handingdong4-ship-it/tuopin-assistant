@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.5.8
+// @version      3.6.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3293,7 +3293,7 @@
       ];
       var VID_MODELS = [
         { id: 'i2v_2_2_20260402_v3', name: 'Seedance2.0Fast', time: 5, res: '480p' },
-        { id: 'i2v_6_2_20260325_v2', name: 'KlingV3Omni',     time: 6, res: '1080p' }
+        { id: 'i2v_5_2_20260313_v2', name: 'Hailuo2.0',        time: 6, res: '1080p' }
       ];
       var SRC_TAG = '_source=7b85549f29393c995e53907313141784';
       var CO_ARTICLE_ID = (function () { var m = location.pathname.match(/\/p\/(\d+)/); return m ? m[1] : '0'; })();
@@ -3352,9 +3352,11 @@
       function coUpdateConfirmBtn() {
         var panel2 = document.getElementById('tuopin-co-panel');
         if (!panel2) return;
-        var checked = panel2.querySelectorAll('.co-select-cb:checked');
-        var area = document.getElementById('tuopin-co-confirm-area');
-        if (area) area.style.display = checked.length ? '' : 'none';
+        var imgChecked = panel2.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+        var singleArea = document.getElementById('tuopin-co-single-img-area');
+        if (singleArea) singleArea.style.display = (imgChecked.length === 1) ? '' : 'none';
+        var multiArea = document.getElementById('tuopin-co-multi-img-area');
+        if (multiArea) multiArea.style.display = (imgChecked.length > 1) ? '' : 'none';
       }
       // 用卡片 HTML 填充容器（图片/视频统一 2 列卡，左上角复选框）
       function coFillCards(box, urls, tag) {
@@ -3364,20 +3366,29 @@
           var card = document.createElement('div');
           card.style.cssText = 'position:relative;border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
           card.setAttribute('data-co-url', url);
-          var cbId = 'co-cb-' + (isVideo ? 'v' : 'i') + idx;
-          var mediaHtml = isVideo
-            ? '<video src="' + url + '" controls style="width:100%;border-radius:4px;display:block;margin-bottom:4px;"></video>'
-            : '<img src="' + url + '" style="width:100%;border-radius:4px;display:block;margin-bottom:4px;">';
-          card.innerHTML = '<label for="' + cbId + '" style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
-            + '<input type="checkbox" id="' + cbId + '" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
-            + mediaHtml
-            + '<div style="display:flex;gap:3px;">'
-            + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
-            + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+          if (isVideo) {
+            card.innerHTML = coVidCardHtml(url, '已保存');
+          } else {
+            var cbId = 'co-cb-i' + idx;
+            card.innerHTML = '<label for="' + cbId + '" style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
+              + '<input type="checkbox" id="' + cbId + '" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+              + '<img src="' + url + '" style="width:100%;border-radius:4px;display:block;margin-bottom:4px;">';
+          }
           box.appendChild(card);
         });
         coBindCopy(box);
         coUpdateConfirmBtn();
+      }
+      // 生成视频卡 HTML（带 .co-vid-cb 复选框）
+      function coVidCardHtml(vurl, label) {
+        var cbId = 'co-vcb-' + Math.random().toString(36).slice(2, 9);
+        return '<label for="' + cbId + '" style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
+          + '<input type="checkbox" id="' + cbId + '" class="co-vid-cb" data-url="' + vurl + '" style="width:14px;height:14px;accent-color:#722ed1;cursor:pointer;"></label>'
+          + '<video src="' + vurl + '" controls class="omni-processed" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;"></video>'
+          + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + coEsc(label) + '</div>'
+          + '<div class="co-vid-actions" style="display:none;">'
+          + '<button class="co-vid-focus" data-url="' + vurl + '" style="width:100%;padding:3px;background:#1890ff;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:9px;">设置为焦点图</button>'
+          + '</div>';
       }
       // 渲染历史区（只展示当前文章的历史）
       function coRenderHistory() {
@@ -3971,15 +3982,18 @@
           + '<button id="co-img-model-0" data-midx="0" style="padding:2px 8px;border-radius:10px;border:1px solid #ff7a00;background:#ff7a00;color:#fff;font-size:10px;cursor:pointer;">即梦5.0</button>'
           + '<button id="co-img-model-1" data-midx="1" style="padding:2px 8px;border-radius:10px;border:1px solid #ddd;background:#fff;color:#999;font-size:10px;cursor:pointer;">GPT</button>'
           + '</div></div>'
-          + '<div id="tuopin-co-images" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px;"></div>'
+          + '<div id="tuopin-co-images" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:4px;"></div>'
+          + '<div id="tuopin-co-single-img-area" style="display:none;margin-bottom:4px;"><div style="display:flex;gap:6px;">'
+          + '<button id="tuopin-co-use-focus-btn" style="flex:1;padding:6px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">用于焦点图</button>'
+          + '<button id="tuopin-co-use-video-btn" style="flex:1;padding:6px;background:#722ed1;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">用于视频生成</button>'
+          + '</div></div>'
+          + '<div id="tuopin-co-multi-img-area" style="display:none;margin-bottom:4px;"><div style="display:flex;gap:6px;">'
+          + '<button id="tuopin-co-use-keyframe-btn" style="flex:1;padding:6px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;">用于视频关键帧</button>'
+          + '</div></div>'
           + '<div id="tuopin-co-prompts" style="margin-bottom:8px;"></div>'
           + '<div style="color:#999;font-size:10px;margin-bottom:4px;">图生视频</div>'
           + '<div id="tuopin-co-videos" style="margin-bottom:8px;"></div>'
-          + '<div id="tuopin-co-confirm-area" style="display:none;margin-bottom:6px;">'
-          + '<div style="display:flex;gap:6px;">'
-          + '<button id="tuopin-co-confirm-btn" style="flex:1;padding:7px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">✓ 确认焦点图</button>'
-          + '<button id="tuopin-co-confirm-vid-btn" style="flex:1;padding:7px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">▶ 确认视频图</button>'
-          + '</div></div>'
+          + '<div style="display:none;"><button id="tuopin-co-confirm-vid-btn">▶</button></div>'
           + '<div id="tuopin-co-status" style="color:#1890ff;font-size:11px;margin-top:6px;"></div>'
           + '<div id="tuopin-co-log" style="max-height:90px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:6px;font-size:11px;line-height:1.5;color:#666;"></div>'
           + '<div id="tuopin-co-history" style="margin-top:8px;border-top:1px solid #eee;padding-top:6px;"></div>'
@@ -4566,7 +4580,16 @@
         // 复选框变化时更新确认按钮显示
         // 监听复选框（事件委托）
         panel.addEventListener('change', function (e) {
-          if (e.target && e.target.classList.contains('co-select-cb')) coUpdateConfirmBtn();
+          var t = e.target;
+          if (t && t.classList.contains('co-select-cb')) coUpdateConfirmBtn();
+          if (t && t.classList.contains('co-vid-cb')) {
+            var vidBox = document.getElementById('tuopin-co-videos');
+            if (vidBox) vidBox.querySelectorAll('[data-co-url]').forEach(function(card) {
+              var cb = card.querySelector('.co-vid-cb');
+              var actions = card.querySelector('.co-vid-actions');
+              if (actions) actions.style.display = (cb && cb.checked) ? '' : 'none';
+            });
+          }
         });
         // 设为参考图（事件委托）
         panel.addEventListener('click', function (e) {
@@ -4576,81 +4599,89 @@
             if (url) { coRefImgSet(url, '来自图生图'); }
           }
         });
+        // 图片/视频操作按钮（用于焦点图/视频生成/视频焦点图）
+        panel.addEventListener('click', function (e) {
+          var t = e.target;
+          if (!t) return;
+          var isFocusBtn = t.id === 'tuopin-co-use-focus-btn' || t.classList.contains('co-img-focus') || t.classList.contains('co-vid-focus');
+          var isVideoBtn = t.id === 'tuopin-co-use-video-btn' || t.classList.contains('co-img-video');
+          if (!isFocusBtn && !isVideoBtn) return;
+          // 获取目标 URL
+          var imgUrl = t.getAttribute('data-url');
+          if (!imgUrl) {
+            // 全局按钮：从勾选图取
+            var singleChecked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+            if (!singleChecked.length) return;
+            imgUrl = singleChecked[0].getAttribute('data-url');
+          }
+          if (isVideoBtn) {
+            coRefImgSet(imgUrl, '来自图生图');
+            coLog('✓ 已设为视频参考图: ' + imgUrl.slice(0, 60));
+            return;
+          }
+          // 用于焦点图 / 设置为焦点图
+          var isVidFocus = t.classList.contains('co-vid-focus');
+          var doFocusWithUrl = function(webUrl) {
+            GM_setValue('tuopin_co_confirm_url', webUrl);
+            GM_setValue('tuopin_co_confirm_aid', CO_ARTICLE_ID);
+            GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_co_confirm=1', { active: false, insert: true });
+            coLog('→ 已后台打开编辑页进行焦点图替换: ' + webUrl.slice(0, 80));
+            t.disabled = false; t.textContent = isVidFocus ? '设置为焦点图' : '用于焦点图';
+          };
+          if (isVidFocus) {
+            // 视频 → webp → 焦点图
+            var apiKeyF = GM_getValue(CO_KEY, '');
+            if (!apiKeyF) return alert('请先配置 API Key');
+            coLog('⏳ 视频转 webp 中...');
+            t.disabled = true; t.textContent = '⏳ 转换中...';
+            GM_xmlhttpRequest({
+              method: 'POST', url: GW + '/ai-omni-auth/video/video_to_gif',
+              headers: { 'Authorization': 'Bearer ' + apiKeyF, 'Content-Type': 'application/json' },
+              data: JSON.stringify({ type: 2, video_url: imgUrl, fps: 15, width: 800, quality: 80, upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc' } }),
+              timeout: 60000,
+              onload: function(r) {
+                try {
+                  var j = JSON.parse(r.responseText);
+                  if (j.error_code !== 0) { coLog('✗ 视频转 webp 失败: ' + (j.error_msg || '未知')); t.disabled = false; t.textContent = '设置为焦点图'; return; }
+                  var webpUrl = (j.data || {}).gif_url || '';
+                  if (!webpUrl) { coLog('✗ 视频转 webp 无 URL'); t.disabled = false; t.textContent = '设置为焦点图'; return; }
+                  coLog('✓ 视频转 webp 完成: ' + webpUrl.slice(0, 60));
+                  doFocusWithUrl(webpUrl);
+                } catch(e2) { coLog('✗ 解析失败: ' + e2.message); t.disabled = false; t.textContent = '设置为焦点图'; }
+              },
+              onerror: function() { coLog('✗ 视频转 webp 请求失败'); t.disabled = false; t.textContent = '设置为焦点图'; },
+              ontimeout: function() { coLog('✗ 视频转 webp 超时'); t.disabled = false; t.textContent = '设置为焦点图'; }
+            });
+            return;
+          }
+          // 图片焦点图
+          if (!imgUrl.startsWith('http')) {
+            t.disabled = true; t.textContent = '⏳ 上传中...';
+            GM_xmlhttpRequest({
+              method: 'POST', url: RELAY + '/pictures/upload',
+              headers: { 'Content-Type': 'application/json' },
+              data: JSON.stringify({ data_url: imgUrl }), timeout: 15000,
+              onload: function(r) {
+                try {
+                  var j = JSON.parse(r.responseText);
+                  if (!j.ok) { coLog('✗ 图片上传失败: ' + (j.error || '未知')); t.disabled = false; t.textContent = '用于焦点图'; return; }
+                  doFocusWithUrl(RELAY + '/img/' + j.img_id);
+                } catch(e) { coLog('✗ 解析失败: ' + e.message); t.disabled = false; t.textContent = '用于焦点图'; }
+              },
+              onerror: function() { coLog('✗ 上传请求失败'); t.disabled = false; t.textContent = '用于焦点图'; },
+              ontimeout: function() { coLog('✗ 上传超时'); t.disabled = false; t.textContent = '用于焦点图'; }
+            });
+          } else {
+            doFocusWithUrl(imgUrl);
+          }
+        });
         // 确认填入按钮 / 确认视频图按钮
         panel.addEventListener('click', function (e) {
           var tid = e.target && e.target.id;
-          if (tid !== 'tuopin-co-confirm-btn' && tid !== 'tuopin-co-confirm-vid-btn') return;
+          if (tid !== 'tuopin-co-confirm-vid-btn' && tid !== 'tuopin-co-use-keyframe-btn') return;
           e.preventDefault();
           e.stopPropagation();
-          if (tid === 'tuopin-co-confirm-btn') {
-            var checked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
-            // 图区没选，再找视频区
-            if (!checked.length) checked = panel.querySelectorAll('#tuopin-co-videos .co-select-cb:checked');
-            if (!checked.length) return alert('请先在图生图或视频区域勾选一张图片/视频');
-            var confirmUrl = checked[0].getAttribute('data-url');
-            var confirmBtn2 = document.getElementById('tuopin-co-confirm-btn');
-            function doConfirmWithUrl(webUrl) {
-              GM_setValue('tuopin_co_confirm_url', webUrl);
-              GM_setValue('tuopin_co_confirm_aid', CO_ARTICLE_ID);
-              var editHref = 'http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_co_confirm=1';
-              GM_openInTab(editHref, { active: false, insert: true });
-              coLog('→ 已后台静默打开编辑页进行焦点图替换: ' + webUrl.slice(0, 80));
-              if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; }
-            }
-            var isVideoUrl = /\.(mp4|mov|webm)(\?|$)/i.test(confirmUrl) || /video/i.test(confirmUrl);
-            if (isVideoUrl) {
-              // 视频 → video_to_gif(webp) → 得到 webp URL 再确认
-              var apiKey2 = GM_getValue(CO_KEY, '');
-              if (!apiKey2) return alert('请先配置 API Key');
-              coLog('⏳ 视频转 webp 中...');
-              if (confirmBtn2) { confirmBtn2.disabled = true; confirmBtn2.textContent = '⏳ 转换中...'; }
-              GM_xmlhttpRequest({
-                method: 'POST', url: GW + '/ai-omni-auth/video/video_to_gif',
-                headers: { 'Authorization': 'Bearer ' + apiKey2, 'Content-Type': 'application/json' },
-                data: JSON.stringify({
-                  type: 2,
-                  video_url: confirmUrl,
-                  fps: 15,
-                  width: 800,
-                  quality: 80,
-                  upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc' }
-                }),
-                timeout: 60000,
-                onload: function(r2) {
-                  try {
-                    var j2 = JSON.parse(r2.responseText);
-                    if (j2.error_code !== 0) { coLog('✗ 视频转 webp 失败: ' + (j2.error_msg || '未知')); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
-                    var webpUrl = (j2.data || {}).gif_url || '';
-                    if (!webpUrl) { coLog('✗ 视频转 webp 返回无 URL'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
-                    coLog('✓ 视频转 webp 完成: ' + webpUrl.slice(0, 60));
-                    doConfirmWithUrl(webpUrl);
-                  } catch(e2) { coLog('✗ 视频转 webp 解析失败: ' + e2.message); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
-                },
-                onerror: function() { coLog('✗ 视频转 webp 请求失败'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } },
-                ontimeout: function() { coLog('✗ 视频转 webp 超时'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
-              });
-            } else if (!confirmUrl.startsWith('http')) {
-              // data: 或 blob: URL，先上传到 relay 转为 web 链接
-              coLog('⏳ 焦点图为本地地址，上传转换中...');
-              if (confirmBtn2) { confirmBtn2.disabled = true; confirmBtn2.textContent = '⏳ 上传中...'; }
-              GM_xmlhttpRequest({
-                method: 'POST', url: RELAY + '/pictures/upload',
-                headers: { 'Content-Type': 'application/json' },
-                data: JSON.stringify({ data_url: confirmUrl }), timeout: 15000,
-                onload: function(r) {
-                  try {
-                    var j = JSON.parse(r.responseText);
-                    if (!j.ok) { coLog('✗ 图片上传失败: ' + (j.error || '未知')); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } return; }
-                    doConfirmWithUrl(RELAY + '/img/' + j.img_id);
-                  } catch(e) { coLog('✗ 图片上传解析失败: ' + e.message); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
-                },
-                onerror: function() { coLog('✗ 图片上传 relay 请求失败'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } },
-                ontimeout: function() { coLog('✗ 图片上传超时'); if (confirmBtn2) { confirmBtn2.disabled = false; confirmBtn2.textContent = '✓ 确认焦点图'; } }
-              });
-            } else {
-              doConfirmWithUrl(confirmUrl);
-            }
-          } else if (tid === 'tuopin-co-confirm-vid-btn') {
+          if (tid === 'tuopin-co-confirm-vid-btn') {
             var checkedImgs = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
             if (!checkedImgs.length) { alert('请先在图生图区域勾选要合并成视频的图片'); return; }
             var panel2 = document.getElementById('tuopin-co-panel');
@@ -4701,12 +4732,9 @@
                       function (vurl) {
                         vc2.style.position = 'relative';
                         vc2.setAttribute('data-co-url', vurl);
-                        vc2.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:3px;display:block;"></video>'
-                          + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + vm.name + ' · ' + selectedUrls.length + '张合并</div>'
-                          + '<div style="display:flex;gap:2px;">'
-                          + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
-                          + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                        vc2.innerHTML = coVidCardHtml(vurl, vm.name + ' · ' + selectedUrls.length + '张合并');
                         coBindCopy(vc2);
+                        coUpdateConfirmBtn();
                         savedVids.push(vurl);
                         vidDoneCount++;
                         if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
@@ -4735,6 +4763,9 @@
                 );
               })(vi, vc2, vm, vPrompt);
             });
+          } else if (tid === 'tuopin-co-use-keyframe-btn') {
+            var confirmVidBtn2 = document.getElementById('tuopin-co-confirm-vid-btn');
+            if (confirmVidBtn2) confirmVidBtn2.click();
           }
         });
 
@@ -4766,7 +4797,8 @@
                 + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (idx+1) + '</div>'
                 + '<div style="display:flex;gap:3px;">'
                 + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
-                + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+                + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>'
+                ;
               ic2.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
               ic2.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
               coBindCopy(ic2);
@@ -4826,12 +4858,9 @@
                   btn.disabled = false;
                   vc3.style.position = 'relative';
                   vc3.setAttribute('data-co-url', vurl);
-                  vc3.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:3px;display:block;"></video>'
-                    + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + vm.name + ' · ' + selectedUrls.length + '张合并</div>'
-                    + '<div style="display:flex;gap:2px;">'
-                    + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
-                    + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                  vc3.innerHTML = coVidCardHtml(vurl, vm.name + ' · ' + selectedUrls.length + '张合并');
                   coBindCopy(vc3);
+                  coUpdateConfirmBtn();
                   try {
                     var cur2 = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
                     cur2.pendingTasks = (cur2.pendingTasks || []).filter(function(p) { return p.taskId !== taskId; });
@@ -4911,7 +4940,8 @@
                       + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[0] + ' · 镜头' + (t.idx+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
-                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>'
+                      ;
                     ic3.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
                     ic3.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
                     coBindCopy(ic3);
@@ -4954,11 +4984,11 @@
               vc.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">视频' + (idx + 1) + ' 轮询中...</div>';
               coPollVideo(taskId, modelId,
                 function (vurl) {
-                  vc.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:4px;display:block;"></video>'
-                    + '<div style="display:flex;gap:3px;">'
-                    + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
-                    + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+                  vc.style.position = 'relative';
+                  vc.setAttribute('data-co-url', vurl);
+                  vc.innerHTML = coVidCardHtml(vurl, '已恢复');
                   coBindCopy(vc);
+                  coUpdateConfirmBtn();
                   resumeVids.push(vurl);
                   // 从 pending 移除该 task 并持久化
                   var newPending = [];
@@ -5188,7 +5218,8 @@
                       + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (i+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
-                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>'
+                      ;
                     ic.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
                     ic.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
                     coBindCopy(ic);
