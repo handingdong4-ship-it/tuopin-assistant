@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      2.4.4
+// @version      3.3.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -12,10 +12,13 @@
 // @match        *://youhui.bgm.smzdm.com/add_guonei*
 // @match        *://youhui.bgm.smzdm.com/edit_youhui*
 // @match        *://biaodan.bgm.smzdm.com/*
+// @match        *://www.smzdm.com/p/*
+// @match        *://task-bgm.smzdm.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @grant        GM_openInTab
 // @grant        unsafeWindow
 // @connect      detail.tmall.com
 // @connect      chaoshi.detail.tmall.com
@@ -27,7 +30,10 @@
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
 // @connect      commission-bgm.agentdevops.zdm.net
+// @connect      sso-bgm.smzdm.com
 // @connect      10.45.148.12
+// @connect      gw-openapi-bgm.smzdm.com
+// @connect      openai-cv-bgm.smzdm.com
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // ==/UserScript==
@@ -108,6 +114,83 @@
       document.body.appendChild(s);
     }
     return s;
+  }
+
+  // ===== 流程归属锁：保证队列只在「发起流程的那个标签页」里跑，用户切到别的页面/标签不会重跑 =====
+  // runId 通过 URL 参数 ?tuopin_run= 跨子域/跨重载传递，sessionStorage 在同子域内缓存。
+  // runId 内嵌单调递增序号 seq：新发起的流程序号更大，可抢占旧流程；旧流程标签页下次 reload 时让位。
+  // 锁存在 GM（跨标签共享）+ 心跳续期；带 runId 的标签认领，被动标签（无 runId）一律退出。
+  var TUOPIN_FLOW_LOCK_KEY = 'tuopin_flow_lock';
+  var TUOPIN_FLOW_SEQ_KEY = 'tuopin_flow_seq';
+  var TUOPIN_FLOW_TTL = 120000;  // 锁 120s 过期（单步填表/提交足够宽松，过期才有被动标签接管风险）
+  var TUOPIN_FLOW_HB = 8000;     // 心跳 8s 续期
+  var __tuopinHbTimer = null;
+  var CO_RELAY_URL = 'http://10.45.40.130:8099';
+  function tuopinGetRunId() {
+    try {
+      var sp = new URL(location.href).searchParams.get('tuopin_run');
+      if (sp) { try { sessionStorage.setItem('tuopin_run', sp); } catch (e) {} return sp; }
+    } catch (e) {}
+    try { return sessionStorage.getItem('tuopin_run') || ''; } catch (e) { return ''; }
+  }
+  // biaodan 等子域内 SPA 跳转后 URL 不带 runId、又可能因协议变化 sessionStorage 隔离，
+  // 兜底：当前 GM 锁若仍新鲜，则认其 runId 为本页所属流程（仅用于导航续传，不用于身份判定）。
+  function tuopinGetRunIdWithFallback() {
+    var r = tuopinGetRunId();
+    if (r) return r;
+    var lock = tuopinReadLock();
+    if (lock.ts && (Date.now() - lock.ts) < TUOPIN_FLOW_TTL && lock.runId) return lock.runId;
+    return '';
+  }
+  // 解析 runId 里的序号（runId 形如 s<seq>r<rand>）；解析失败返回 -1
+  function tuopinSeqOf(runId) { var m = /^s(\d+)r/.exec(runId || ''); return m ? parseInt(m[1], 10) : -1; }
+  function tuopinNewRunId() {
+    var seq = (parseInt(GM_getValue(TUOPIN_FLOW_SEQ_KEY, '0'), 10) || 0) + 1;
+    GM_setValue(TUOPIN_FLOW_SEQ_KEY, String(seq));
+    var id = 's' + seq + 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+    try { sessionStorage.setItem('tuopin_run', id); } catch (e) {}
+    return id;
+  }
+  function tuopinReadLock() { try { return JSON.parse(GM_getValue(TUOPIN_FLOW_LOCK_KEY, '{}')) || {}; } catch (e) { return {}; } }
+  function tuopinWriteLock(runId) { GM_setValue(TUOPIN_FLOW_LOCK_KEY, JSON.stringify({ runId: runId, seq: tuopinSeqOf(runId), ts: Date.now() })); }
+  function tuopinStartHb() {
+    if (__tuopinHbTimer) clearInterval(__tuopinHbTimer);
+    __tuopinHbTimer = setInterval(function () {
+      try { var r = sessionStorage.getItem('tuopin_run'); if (r) tuopinWriteLock(r); } catch (e) {}
+    }, TUOPIN_FLOW_HB);
+  }
+  // 判定本标签页是否应执行队列，并在应执行时接管锁。核心原则：
+  //   锁只用来标记「有没有别的标签页正在活跃跑」；没有活跃流程时谁都能跑。
+  //   身份用 sessionStorage（每标签独立）+ URL 参数，不用 GM 锁做身份（避免所有标签都自认流程页）。
+  function tuopinAcquireFlow() {
+    var myRun = tuopinGetRunId();            // 仅 URL 参数 / 本标签 sessionStorage
+    var lock = tuopinReadLock();
+    var fresh = lock.ts && (Date.now() - lock.ts) < TUOPIN_FLOW_TTL;
+    if (myRun) {
+      // 我是流程标签页：只有「更新序号的别的流程」在活跃跑时才让位
+      if (fresh && lock.seq >= 0 && lock.seq > tuopinSeqOf(myRun) && lock.runId !== myRun) return false;
+      tuopinWriteLock(myRun); tuopinStartHb(); return true;
+    }
+    // 我没有 runId（可能是流程页 reload 丢了 session，也可能是被动标签）：
+    if (fresh && lock.runId) return false;   // 别的标签页正在活跃跑 → 我退出，避免重复
+    // 没有活跃流程 → 接管：沿用锁里旧 runId 或新建，写入本标签 session，成为流程页
+    var adopt = (lock.runId) ? lock.runId : tuopinNewRunId();
+    try { sessionStorage.setItem('tuopin_run', adopt); } catch (e) {}
+    tuopinWriteLock(adopt); tuopinStartHb(); return true;
+  }
+  // 流程内导航：把 runId 带进目标 URL，并把协议对齐当前页，避免 http↔https 重定向丢参数
+  function tuopinGo(url) {
+    var runId = tuopinGetRunIdWithFallback();
+    if (runId) {
+      try {
+        var u = new URL(url, location.href);
+        if (/^https?:$/.test(u.protocol) && u.protocol !== location.protocol) u.protocol = location.protocol;
+        u.searchParams.set('tuopin_run', runId);
+        url = u.toString();
+      } catch (e) {}
+    }
+    try { window.onbeforeunload = null; } catch (e) {}
+    location.href = url;
   }
 
   // ===== 公共：右上角汇总面板（所有 SMZDM 页面共用，表单全部完成前一直固定展示）=====
@@ -272,8 +355,8 @@
           // 无论是否已在队列，都把 index 指向该商品，确保从正确位置开始
           GM_setValue('tuopin_subsidy_index', existsIdx);
           GM_setValue('tuopin_subsidy_saved_formid', '');
-          window.onbeforeunload = null;
-          location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+          tuopinNewRunId();
+          tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
         };
       });
     }
@@ -297,6 +380,8 @@
     try { queue = JSON.parse(queueStr); } catch (e) { queue = []; }
     var idx = GM_getValue('tuopin_publish_index', 0);
     if (!queue.length || idx >= queue.length) return;
+    // 归属锁：只有发起流程的标签页（带 tuopin_run）才跑队列，被动标签页直接退出
+    if (!tuopinAcquireFlow()) { console.log('[拓品] 非流程标签页，跳过发布队列'); return; }
 
     function smzdmLog(msg) {
       var box = document.getElementById('tuopin-smzdm-log');
@@ -1211,7 +1296,7 @@
         if (currentIdx < total) {
           await sleep(500);
           window.onbeforeunload = null;
-          location.href = 'http://youhui.bgm.smzdm.com/add_guonei';
+          tuopinGo('http://youhui.bgm.smzdm.com/add_guonei');
           return;
         }
         // 是最后一个 → 落到末尾汇总逻辑
@@ -1278,7 +1363,7 @@
         if (currentIdx < total) {
           await sleep(500);
           window.onbeforeunload = null;
-          location.href = 'http://youhui.bgm.smzdm.com/add_guonei';
+          tuopinGo('http://youhui.bgm.smzdm.com/add_guonei');
           return;
         }
       } else if (p1 === 'error') {
@@ -1290,7 +1375,7 @@
         if (currentIdx < total) {
           await sleep(500);
           window.onbeforeunload = null;
-          location.href = 'http://youhui.bgm.smzdm.com/add_guonei';
+          tuopinGo('http://youhui.bgm.smzdm.com/add_guonei');
           return;
         }
       } else {
@@ -1342,7 +1427,7 @@
           smzdmLog('处理下一个...');
           await sleep(1500);
           window.onbeforeunload = null;
-          location.href = 'http://youhui.bgm.smzdm.com/add_guonei';
+          tuopinGo('http://youhui.bgm.smzdm.com/add_guonei');
           return;
         }
       }
@@ -1379,7 +1464,7 @@
         smzdmLog('有编辑任务，3秒后跳转到最近文章 ' + pendingEdit[0].articleId + '...');
         await sleep(3000);
         window.onbeforeunload = null;
-        location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + pendingEdit[0].articleId;
+        tuopinGo('http://youhui.bgm.smzdm.com/edit_youhui/' + pendingEdit[0].articleId);
         return;
       }
       // 如果有补贴队列，跳转到补贴表单页面
@@ -1387,7 +1472,7 @@
         smzdmLog('有 ' + pendingSubsidy.length + ' 个补贴待创建，3秒后跳转...');
         await sleep(3000);
         window.onbeforeunload = null;
-        location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+        tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
       }
     }
 
@@ -1849,6 +1934,40 @@
       var syncRadio = document.getElementById('article_sync_home_1');
       if (syncRadio && !syncRadio.checked) syncRadio.click();
 
+      // 5.1 立即更新（触发发布时间同步），处理弹窗后继续（复制自 3日精选编辑流程）
+      await dsSleep(300);
+      var dsUpdateBtn = null;
+      var dsAllBtnsU = document.querySelectorAll('button');
+      for (var dui = 0; dui < dsAllBtnsU.length; dui++) {
+        if ((dsAllBtnsU[dui].textContent || '').trim() === '立即更新' && dsAllBtnsU[dui].offsetParent !== null) {
+          dsUpdateBtn = dsAllBtnsU[dui]; break;
+        }
+      }
+      if (dsUpdateBtn) {
+        dsUpdateBtn.click();
+        dsLog('✓ 已点击立即更新');
+        await dsSleep(1500);
+        // 处理弹窗（时间同步确认 / 私券链接），按 value 匹配"确定"或"确认"
+        var dsPopU = document.querySelectorAll('.boxy-btn1, .boxy-btn2, .boxy-btn3');
+        for (var dpu = 0; dpu < dsPopU.length; dpu++) {
+          if (dsPopU[dpu].offsetParent !== null) {
+            var dpuv = (dsPopU[dpu].value || dsPopU[dpu].textContent || '').trim();
+            if (dpuv === '确定' || dpuv === '确认') { dsPopU[dpu].click(); break; }
+          }
+        }
+        await dsSleep(1500);
+        // 再次关闭可能出现的"同步成功"通知弹窗（否则遮罩会阻挡后续操作）
+        var dsPopU2 = document.querySelectorAll('.boxy-btn1, .boxy-btn2, .boxy-btn3');
+        for (var dpu2 = 0; dpu2 < dsPopU2.length; dpu2++) {
+          if (dsPopU2[dpu2].offsetParent !== null) { dsPopU2[dpu2].click(); break; }
+        }
+        var dsBlackout = document.querySelector('.boxy-modal-blackout');
+        if (dsBlackout && dsBlackout.offsetParent !== null) dsBlackout.click();
+        await dsSleep(1000);
+      } else {
+        dsLog('⚠ 未找到"立即更新"按钮，跳过');
+      }
+
       // 6. 同步 UEditor 并保存（循环处理弹窗）
       await dsSleep(300);
       try {
@@ -1930,7 +2049,7 @@
         dsLog('✓ 已加入补贴队列，2秒后跳转建表单...');
         await dsSleep(2000);
         window.onbeforeunload = null;
-        location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+        tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
       } else {
         dsLog('✗ 未获取到文章ID，无法跳转建表单');
         if (goBtn) { goBtn.disabled = false; goBtn.textContent = '去补贴'; }
@@ -1962,6 +2081,241 @@
 
   // ===== SMZDM edit_youhui 编辑页逻辑（3日同价文章更新）=====
   if (location.hostname === 'youhui.bgm.smzdm.com' && location.pathname.indexOf('edit_youhui') >= 0) {
+
+    // ── 内容优化：确认填入焦点图 + 加标签 + 保存 ──
+    if (location.search.indexOf('tuopin_co_confirm=1') >= 0) {
+      var coConfirmUrl = GM_getValue('tuopin_co_confirm_url', '');
+      GM_setValue('tuopin_co_confirm_url', '');
+      GM_setValue('tuopin_co_confirm_aid', '');
+      if (coConfirmUrl) {
+        (function coDoConfirm() {
+          function coLog2(msg) { console.log('[内容优化确认] ' + msg); }
+
+          // jQuery/普通 HTML 表单直接赋值即可，不需要 nativeSet hack
+          function setV(el, val) {
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            // 兼容 jQuery 事件
+            if (window.jQuery) { window.jQuery(el).trigger('input').trigger('change'); }
+          }
+
+          // 找焦点图输入框：先用 name，再用"焦点图"label 文字定位同行 input
+          function findFocusInput() {
+            var el = document.querySelector('[name="article_pic_url"]');
+            if (el) return el;
+            var allEls = document.querySelectorAll('td, th, label, span');
+            for (var i = 0; i < allEls.length; i++) {
+              if (allEls[i].textContent.trim() === '焦点图') {
+                var row = allEls[i].closest('tr') || allEls[i].parentElement;
+                if (row) {
+                  var inp = row.querySelector('input[type="text"], input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"])');
+                  if (inp) return inp;
+                }
+              }
+            }
+            return null;
+          }
+
+          // 找焦点图行的"获取"按钮（往上最多找3层容器）
+          function findGetBtn(focusInput) {
+            var container = focusInput.parentElement;
+            for (var up = 0; up < 5; up++) {
+              if (!container) break;
+              var btns = container.querySelectorAll('button, input[type="button"], input[type="submit"]');
+              for (var i = 0; i < btns.length; i++) {
+                var t = (btns[i].textContent || '').trim() || btns[i].value || '';
+                if (t === '获取') return btns[i];
+              }
+              if (container.tagName === 'TR' || container.tagName === 'FORM') break;
+              container = container.parentElement;
+            }
+            return null;
+          }
+
+          // 等页面完全加载后再额外等 800ms（jQuery 初始化、动态渲染）
+          function waitReady(cb) {
+            if (document.readyState === 'complete') { setTimeout(cb, 800); }
+            else { window.addEventListener('load', function () { setTimeout(cb, 800); }, { once: true }); }
+          }
+
+          waitReady(function () {
+            // 1. 填焦点图 URL
+            var focusInput = findFocusInput();
+            if (focusInput) {
+              setV(focusInput, coConfirmUrl);
+              coLog2('✓ 已填入焦点图 URL: ' + coConfirmUrl.slice(0, 60));
+              // 300ms 后点"获取"
+              setTimeout(function () {
+                var getBtn = findGetBtn(focusInput);
+                if (getBtn) { getBtn.click(); coLog2('✓ 已点击获取'); }
+                else { coLog2('⚠ 未找到获取按钮，跳过获取步骤'); }
+              }, 300);
+            } else {
+              coLog2('⚠ 未找到焦点图输入框，尝试直接保存');
+            }
+
+            // 2. 加标签"内容优化"（等获取处理完再加）
+            setTimeout(function () {
+              var tagInput = document.querySelector('#tag_name');
+              var addTagBtn = document.querySelector('#add_new_tag');
+              if (tagInput && addTagBtn) {
+                setV(tagInput, '内容优化');
+                setTimeout(function () { addTagBtn.click(); coLog2('✓ 标签已添加'); }, 300);
+              } else {
+                coLog2('⚠ 未找到标签输入框，跳过');
+              }
+
+              // 3. 循环点"保存修改"直到出现"保存成功"
+              setTimeout(function () {
+                var tries = 0;
+                var itv = setInterval(function () {
+                  if ((document.body.innerText || '').indexOf('保存成功') >= 0) {
+                    clearInterval(itv); coLog2('✓ 保存成功'); return;
+                  }
+                  if (tries++ > 15) { clearInterval(itv); coLog2('⚠ 保存超时'); return; }
+                  // 优先处理弹窗（layui/layer/普通 confirm）
+                  var popSelectors = [
+                    '.layui-layer-btn0', '.layui-layer-btn a', '.layer-btn a',
+                    'button', 'input[type="button"]', 'input[type="submit"]', 'a.J_GlobalConfirm'
+                  ];
+                  var popFound = false;
+                  for (var s = 0; s < popSelectors.length && !popFound; s++) {
+                    var nodes = document.querySelectorAll(popSelectors[s]);
+                    for (var j = 0; j < nodes.length; j++) {
+                      var pv = (nodes[j].value || nodes[j].textContent || '').trim();
+                      if ((pv === '确定' || pv === '确认' || pv === 'OK') && nodes[j].offsetParent !== null) {
+                        nodes[j].click(); coLog2('✓ 点击弹窗确认: ' + pv); popFound = true; break;
+                      }
+                    }
+                  }
+                  if (popFound) return;
+                  // 没有弹窗，点"保存修改"
+                  var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+                  for (var k = 0; k < btns.length; k++) {
+                    var t = (btns[k].textContent || '').trim() || btns[k].value || '';
+                    if (t === '保存修改' && btns[k].offsetParent !== null) {
+                      btns[k].click(); coLog2('→ 点击保存修改 (第' + tries + '次)'); break;
+                    }
+                  }
+                }, 1500);
+              }, 1000);
+            }, 1200);
+          });
+        })();
+        return;
+      }
+    }
+    // ── END 内容优化确认 ──
+
+    // ── 代码植入：自动追加固定 HTML 到优惠力度字段末尾 ──
+    if (location.search.indexOf('tuopin_inject=1') >= 0) {
+      (function coDoInject() {
+        var m = location.pathname.match(/edit_youhui\/(\d+)/);
+        var injectId = m ? m[1] : null;
+        if (!injectId) { console.log('[代码植入] 无法识别文章ID'); return; }
+
+        var INJECT_HTML = GM_getValue('tuopin_inject_code', '');
+        if (!INJECT_HTML) {
+          INJECT_HTML = '<p style="text-align: center;">'
+            + '<span style="color: rgb(187, 2, 0);"><strong>站内🔍<span style="color: rgb(0, 128, 0);">「美食618」</span><br/>【每日抽奖】</strong></span>'
+            + '</p>'
+            + '<p style="text-align: center;">'
+            + '<span style="color: rgb(187, 2, 0);"><strong>&nbsp; &nbsp; <a id="link_1779260639299" href="https://m.smzdm.com/topic/x0x0fc/mie30m" target="_blank" quota_pre="" quota="" type="" title="优惠券">点击下方</a>👇转盘参与抽奖活动<br/></strong></span>'
+            + '</p>'
+            + '<p>'
+            + '<a id="link_1779260642514" href="https://m.smzdm.com/topic/x0x0fc/mie30m" target="_blank" quota_pre="" quota="" type="" title="优惠券"><img src="http://y.zdmimg.com/202605/20/6a0d5c1e0ec936840.gif" _size="4012071" alt="" title="" data-title=""/></a>'
+            + '</p>';
+        }
+        GM_setValue('tuopin_inject_code', '');
+        var INJECT_MARK = 'mie30m';
+
+        function waitReady(cb) {
+          if (document.readyState === 'complete') { setTimeout(cb, 1500); }
+          else { window.addEventListener('load', function() { setTimeout(cb, 1500); }, { once: true }); }
+        }
+
+        waitReady(function() {
+          // 动态查找"优惠力度"对应的 UEditor 实例编号
+          var ueInstName = (function() {
+            var allNodes = document.querySelectorAll('*');
+            for (var i = 0; i < allNodes.length; i++) {
+              var el = allNodes[i];
+              for (var j = 0; j < el.childNodes.length; j++) {
+                if (el.childNodes[j].nodeType === 3 && el.childNodes[j].textContent.trim() === '优惠力度') {
+                  var parent = el;
+                  for (var k = 0; k < 8; k++) {
+                    parent = parent.parentElement;
+                    if (!parent) break;
+                    var iframe = parent.querySelector('iframe[id^="ueditor_"]');
+                    if (iframe) { return 'ueditorInstant' + iframe.id.replace('ueditor_', ''); }
+                  }
+                }
+              }
+            }
+            return 'ueditorInstant0';
+          })();
+
+          var deadline = Date.now() + 5000;
+          function tryInject() {
+            var ueReady = false;
+            try { ueReady = typeof UE !== 'undefined' && UE.instants[ueInstName] && UE.instants[ueInstName].isReady === 1; } catch(e) {}
+            if (!ueReady) {
+              if (Date.now() < deadline) { setTimeout(tryInject, 100); return; }
+              console.log('[代码植入] UEditor 未就绪'); document.title = '[失败] 代码植入 ' + injectId; return;
+            }
+            var editor = UE.instants[ueInstName];
+            var cur = editor.getContent();
+            if (cur.indexOf(INJECT_MARK) !== -1) {
+              console.log('[代码植入] 已植入，跳过');
+              document.title = '[跳过] 已植入 ' + injectId; return;
+            }
+            editor.setContent((cur && cur.trim()) ? cur + INJECT_HTML : INJECT_HTML);
+            console.log('[代码植入] ✓ 已追加，准备保存...');
+            var saveAttempts = 0;
+            function trySave() {
+              if ((document.body.innerText || '').indexOf('保存成功') >= 0) {
+                console.log('[代码植入] ✓ 保存成功');
+                document.title = '[完成] 代码植入 ' + injectId; return;
+              }
+              if (saveAttempts >= 8) { document.title = '[未确认] 代码植入 ' + injectId; return; }
+              saveAttempts++;
+              // 先处理可能存在的弹窗
+              var popFound = false;
+              var popSelectors = ['.boxy-btn3', '.boxy-btn1', '.boxy-btn2', '.layui-layer-btn0', 'a.J_GlobalConfirm'];
+              for (var pi = 0; pi < popSelectors.length; pi++) {
+                var nodes = document.querySelectorAll(popSelectors[pi]);
+                for (var j = 0; j < nodes.length; j++) {
+                  if (nodes[j].offsetParent !== null) {
+                    var pv = (nodes[j].textContent || nodes[j].value || '').trim();
+                    // boxy-btn3 优先点"忽略"
+                    if (popSelectors[pi] === '.boxy-btn3') {
+                      if (pv.indexOf('忽略') !== -1) { nodes[j].click(); popFound = true; break; }
+                    } else if (pv === '确定' || pv === '确认' || pv === 'OK' || pv.indexOf('忽略') !== -1) {
+                      nodes[j].click(); popFound = true; break;
+                    }
+                  }
+                }
+                if (popFound) break;
+              }
+              if (popFound) { setTimeout(trySave, 1500); return; }
+              // 无弹窗，点"保存修改"
+              var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+              for (var bi = 0; bi < btns.length; bi++) {
+                var bt = (btns[bi].textContent || '').trim() || btns[bi].value || '';
+                if (bt === '保存修改') { btns[bi].click(); break; }
+              }
+              setTimeout(trySave, 1800);
+            }
+            setTimeout(trySave, 500);
+          }
+          tryInject();
+        });
+      })();
+      return;
+    }
+    // ── END 代码植入 ──
+
     var editQueue = [];
     try { editQueue = JSON.parse(GM_getValue('tuopin_edit_queue', '[]')); } catch (e) {}
     if (!editQueue.length) { setupDirectSubsidyPanel(); return; }
@@ -1972,6 +2326,8 @@
       GM_setValue('tuopin_edit_index', 0);
       return;
     }
+    // 归属锁：只有发起流程的标签页（带 tuopin_run）才跑编辑队列
+    if (!tuopinAcquireFlow()) { console.log('[拓品] 非流程标签页，跳过编辑队列'); return; }
 
     function editLog(msg) {
       console.log('[拓品编辑] ' + msg);
@@ -2172,7 +2528,7 @@
         editLog('还剩 ' + (editQueue.length - editIdx) + ' 篇，2秒后跳转...');
         await sleepEdit(2000);
         window.onbeforeunload = null;
-        location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + editQueue[editIdx].articleId;
+        tuopinGo('http://youhui.bgm.smzdm.com/edit_youhui/' + editQueue[editIdx].articleId);
       } else {
         GM_setValue('tuopin_edit_queue', '[]');
         GM_setValue('tuopin_edit_index', 0);
@@ -2183,7 +2539,7 @@
           editLog('有 ' + pendingSubsidy2.length + ' 个补贴待创建，2秒后跳转...');
           await sleepEdit(2000);
           window.onbeforeunload = null;
-          location.href = 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3';
+          tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
         } else {
           if (progressEl) progressEl.textContent = '全部完成！';
         }
@@ -2217,6 +2573,8 @@
       GM_setValue('tuopin_subsidy_index', 0);
       return;
     }
+    // 归属锁：只有发起流程的标签页（带 tuopin_run）才跑补贴队列
+    if (!tuopinAcquireFlow()) { console.log('[拓品] 非流程标签页，跳过补贴队列'); return; }
 
     function subsidyLog(msg) {
       console.log('[拓品补贴] ' + msg);
@@ -2765,7 +3123,7 @@
       saveBtn.click();
       // 给保存请求一点时间；若本页未刷新，再主动跳列表页
       await sleep(2000);
-      location.href = '/biaodan/subsidies_list_ver3';
+      tuopinGo('/biaodan/subsidies_list_ver3');
     }
 
     var __subsidyRunning = false;
@@ -2832,7 +3190,17 @@
         }
         if (clickTarget) {
           // 若是 <a> 且有 href，记下来兜底直接导航
-          var href = clickTarget.tagName === 'A' ? clickTarget.getAttribute('href') : (clickTarget.closest && clickTarget.closest('a') ? clickTarget.closest('a').getAttribute('href') : '');
+          var aEl = clickTarget.tagName === 'A' ? clickTarget : (clickTarget.closest ? clickTarget.closest('a') : null);
+          var href = aEl ? aEl.getAttribute('href') : '';
+          // 站点新建按钮是 <a target="_blank">，点击会新开标签页导致流程断裂（新标签无 runId 被拦）。
+          // 强制在当前标签页跳转：优先用 href 直接 tuopinGo（带 runId），否则去掉 target 再 click。
+          if (href && href !== '#' && href.indexOf('javascript') !== 0) {
+            subsidyLog('✓ 找到新建按钮，当前页打开表单（避免新开标签）');
+            if (href.indexOf('http') === 0) tuopinGo(href);
+            else tuopinGo(href.indexOf('/') === 0 ? href : '/biaodan/' + href);
+            return;
+          }
+          try { if (aEl) aEl.target = '_self'; if (clickTarget.target) clickTarget.target = '_self'; } catch (e) {}
           clickTarget.click();
           subsidyLog('✓ 已点击"新建机审补贴购表单"，等待跳转...');
           // 等待是否离开列表页；没跳转则用 href 兜底导航
@@ -2843,8 +3211,8 @@
           }
           if (!navigated && href) {
             subsidyLog('点击未跳转，使用链接直接打开表单页');
-            if (href.indexOf('http') === 0) location.href = href;
-            else location.href = href.indexOf('/') === 0 ? href : '/biaodan/' + href;
+            if (href.indexOf('http') === 0) tuopinGo(href);
+            else tuopinGo(href.indexOf('/') === 0 ? href : '/biaodan/' + href);
           } else if (!navigated) {
             subsidyLog('✗ 点击后未跳转且无链接，请手动点击新建按钮');
           } else {
@@ -2877,7 +3245,7 @@
           subsidyLog('表单 ' + curFid + ' 已保存，跳列表页继续下一个');
           GM_setValue('tuopin_subsidy_saved_formid', '');
           await sleep(800);
-          location.href = '/biaodan/subsidies_list_ver3';
+          tuopinGo('/biaodan/subsidies_list_ver3');
           return;
         }
         await fillSubsidyFormPage2();
@@ -2886,7 +3254,7 @@
 
       subsidyLog('当前页面非列表/表单页，等待跳转...');
       await sleep(2000);
-      location.href = '/biaodan/subsidies_list_ver3';
+      tuopinGo('/biaodan/subsidies_list_ver3');
     }
 
     if (document.readyState === 'complete') {
@@ -2897,6 +3265,1715 @@
     return;
   }
   // ===== END 补贴表单逻辑 =====
+
+  // ===== 内容优化（www.smzdm.com/p/* 文章页）：场景词 → mind-pad 生成 4 条场景提示词 → 图生图 → 图生视频 =====
+  if (location.hostname === 'www.smzdm.com' && location.pathname.indexOf('/p/') === 0) {
+    (function setupContentOptimize() {
+      if (document.getElementById('tuopin-co-panel')) return;
+
+      var CO_KEY = 'tuopin_aigc_key';            // gw-openapi Bearer key
+      var coImgMeta = [];
+      var MINDPAD = 'https://mindpad-bgm.smzdm.com';
+      var GW = 'https://gw-openapi-bgm.smzdm.com';
+      var IMG_MODELS = [
+        'img_1_2_20250922_v3',   // 即梦图片编辑 5.0
+        'img_7_2_20260114_v1'    // GPT Image 1.5
+      ];
+      var IMG_MODEL_NAMES = ['即梦5.0', 'GPT1.5'];
+      var IMG_RES = '512px';
+      // 6张图各自的拍摄角度，确保多角度出图
+      var IMG_ANGLES = [
+        '俯拍平铺视角，商品平铺展示',
+        '手持特写镜头，突出商品质感细节',
+        '侧面45度斜拍，搭配场景化背景',
+        '正面平拍视角，干净简洁背景',
+        '斜俯45度视角，产品自然堆叠摆放',
+        '近景微距特写，截面纹理质感清晰'
+      ];
+      var VID_MODELS = [
+        { id: 'i2v_2_2_20260402_v3', name: 'Seedance2.0Fast', time: 5, res: '480p' },
+        { id: 'i2v_6_2_20260325_v2', name: 'KlingV3Omni',     time: 6, res: '1080p' }
+      ];
+      var SRC_TAG = '_source=7b85549f29393c995e53907313141784';
+      var CO_ARTICLE_ID = (function () { var m = location.pathname.match(/\/p\/(\d+)/); return m ? m[1] : '0'; })();
+      var CO_SESSION_KEY = 'tuopin_co_session_' + CO_ARTICLE_ID;   // 3h 内刷新免责恢复
+      var CO_HIST_KEY = 'tuopin_co_history';
+
+      function coLog(msg) {
+        var box = document.getElementById('tuopin-co-log');
+        if (box) { box.innerHTML += '<div>' + msg + '</div>'; box.scrollTop = box.scrollHeight; }
+        console.log('[内容优化] ' + msg);
+      }
+      function coSetStatus(t) { var el = document.getElementById('tuopin-co-status'); if (el) el.textContent = t; }
+      function coEsc(s) { return String(s == null ? '' : s).replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+      // 会话持久化（3h 内刷新/切换不丢结果）
+      function coLoadSession() {
+        try { return JSON.parse(GM_getValue(CO_SESSION_KEY, '{}')) || {}; } catch (e) { return {}; }
+      }
+      function coSaveSession(scene, prompts, images, videos, pendingTasks, pendingImgs) {
+        GM_setValue(CO_SESSION_KEY, JSON.stringify({
+          ts: Date.now(), scene: scene, prompts: prompts, images: images, videos: videos,
+          pendingTasks: pendingTasks || [], pendingImgs: pendingImgs || []
+        }));
+      }
+      // 历史归档（3 日内，压缩：图片一行、视频一行）
+      function coSaveHistory(scene, prompts, images, videos) {
+        try {
+          var hist = JSON.parse(GM_getValue(CO_HIST_KEY, '[]'));
+          hist.unshift({
+            aid: CO_ARTICLE_ID, url: location.href,
+            date: new Date().toISOString().slice(0, 16).replace('T', ' '),
+            scene: scene, prompts: prompts, images: images, videos: videos
+          });
+          var cutoff = Date.now() - 3 * 864e5;
+          hist = hist.filter(function (h) { return h.date && new Date(h.date.replace(' ', 'T')).getTime() > cutoff; });
+          if (hist.length > 15) hist = hist.slice(0, 15);
+          GM_setValue(CO_HIST_KEY, JSON.stringify(hist));
+        } catch (e) {}
+      }
+      // 恢复按钮：绑定复制事件
+      function coBindCopy(scope) {
+        scope.querySelectorAll('.co-copy').forEach(function (b) {
+          b.onclick = function () {
+            var u = b.getAttribute('data-url');
+            GM_setValue('tuopin_co_last_url', u);
+            try { navigator.clipboard && navigator.clipboard.writeText(u); } catch (e) {}
+            b.textContent = '已复制'; setTimeout(function () { b.textContent = '复制'; }, 1500);
+          };
+        });
+      }
+      function coUpdateConfirmBtn() {
+        var panel2 = document.getElementById('tuopin-co-panel');
+        if (!panel2) return;
+        var checked = panel2.querySelectorAll('.co-select-cb:checked');
+        var area = document.getElementById('tuopin-co-confirm-area');
+        if (area) area.style.display = checked.length ? '' : 'none';
+      }
+      // 用卡片 HTML 填充容器（图片/视频统一 2 列卡，左上角复选框）
+      function coFillCards(box, urls, tag) {
+        box.innerHTML = '';
+        urls.forEach(function (url, idx) {
+          var isVideo = /video|mp4|\.mov/i.test(url);
+          var card = document.createElement('div');
+          card.style.cssText = 'position:relative;border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
+          card.setAttribute('data-co-url', url);
+          var cbId = 'co-cb-' + (isVideo ? 'v' : 'i') + idx;
+          var mediaHtml = isVideo
+            ? '<video src="' + url + '" controls style="width:100%;border-radius:4px;display:block;margin-bottom:4px;"></video>'
+            : '<img src="' + url + '" style="width:100%;border-radius:4px;display:block;margin-bottom:4px;">';
+          card.innerHTML = '<label for="' + cbId + '" style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
+            + '<input type="checkbox" id="' + cbId + '" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+            + mediaHtml
+            + '<div style="display:flex;gap:3px;">'
+            + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
+            + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+          box.appendChild(card);
+        });
+        coBindCopy(box);
+        coUpdateConfirmBtn();
+      }
+      // 渲染历史区（只展示当前文章的历史）
+      function coRenderHistory() {
+        var box = document.getElementById('tuopin-co-history');
+        if (!box) return;
+        var hist = [];
+        try {
+          var all = JSON.parse(GM_getValue(CO_HIST_KEY, '[]'));
+          // 清理过期
+          var cutoff = Date.now() - 3 * 864e5;
+          all = all.filter(function (h) { return h.date && new Date(h.date.replace(' ', 'T')).getTime() > cutoff; });
+          if (all.length > 15) all = all.slice(0, 15);
+          GM_setValue(CO_HIST_KEY, JSON.stringify(all));
+          // 只保留当前文章
+          hist = all.filter(function (h) { return String(h.aid) === String(CO_ARTICLE_ID); });
+        } catch (e) { hist = []; }
+        if (!hist.length) { box.innerHTML = '<div style="color:#ccc;font-size:10px;">暂无历史记录</div>'; return; }
+        var h = '<div style="color:#999;font-size:10px;margin-bottom:4px;">历史记录 (3日内)</div>';
+        hist.forEach(function (entry, ei) {
+          var eid = 'co-hist-' + ei;
+          h += '<div style="border:1px solid #eee;border-radius:6px;padding:6px;margin-bottom:4px;">'
+            + '<div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:11px;color:#333;" onclick="var x=document.getElementById(\'' + eid + '-body\');var arr=this.querySelector(\'.co-arrow\');'
+            + 'if(x.style.display===\'none\'){x.style.display=\'block\';arr.textContent=\'▲\';}else{x.style.display=\'none\';arr.textContent=\'▼\';}">'
+            + '<span><b style="color:#ff7a00;">' + coEsc(entry.date) + '</b> ' + coEsc((entry.scene || '').slice(0, 15)) + '</span>'
+            + '<span class="co-arrow" style="color:#999;font-size:10px;">▼</span></div>'
+            + '<div id="' + eid + '-body" style="display:none;margin-top:4px;">';
+          // 提示词
+          if (entry.prompts && entry.prompts.length) {
+            h += '<div style="font-size:10px;color:#666;margin-bottom:4px;">';
+            entry.prompts.forEach(function (p, pi) { h += (pi + 1) + '. ' + coEsc(p.slice(0, 60)) + '<br>'; });
+            h += '</div>';
+          }
+          // 图片行
+          if (entry.images && entry.images.length) {
+            h += '<div style="color:#999;font-size:9px;">图片</div>'
+              + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:4px;">';
+            entry.images.forEach(function (u) {
+              h += '<a href="' + u + '" target="_blank"><img src="' + u + '" loading="lazy" style="width:100%;border-radius:4px;display:block;"></a>';
+            });
+            h += '</div>';
+          }
+          // 视频行
+          if (entry.videos && entry.videos.length) {
+            h += '<div style="color:#999;font-size:9px;">视频</div>'
+              + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">';
+            entry.videos.forEach(function (u) {
+              h += '<video src="' + u + '" controls preload="none" style="width:100%;border-radius:4px;display:block;"></video>';
+            });
+            h += '</div>';
+          }
+          h += '</div></div>';
+        });
+        box.innerHTML = h;
+      }
+
+      // 提取文章头图：优先 og:image，否则取首张大图
+      function coGetArticleImage() {
+        var og = document.querySelector('meta[property="og:image"]') || document.querySelector('meta[name="og:image"]');
+        if (og && og.content) return og.content;
+        var imgs = document.querySelectorAll('img');
+        for (var i = 0; i < imgs.length; i++) {
+          var w = imgs[i].naturalWidth || imgs[i].width || 0;
+          if (w >= 300 && /smzdm|alicdn|zdmimg/.test(imgs[i].src)) return imgs[i].src;
+        }
+        for (var j = 0; j < imgs.length; j++) {
+          if ((imgs[j].naturalWidth || imgs[j].width || 0) >= 300) return imgs[j].src;
+        }
+        return '';
+      }
+      // 取文章标题（用于生成提示词时锁定商品）
+      function coGetArticleTitle() {
+        var og = document.querySelector('meta[property="og:title"]');
+        if (og && og.content) return og.content.trim();
+        var h1 = document.querySelector('h1');
+        if (h1 && h1.textContent) return h1.textContent.trim();
+        var t = (document.title || '').trim();
+        // 去掉站点后缀
+        return t.replace(/\s*[—\-|]\s*什么值得买.*$/, '').trim();
+      }
+
+      // ===== 任务时段共享端点（commission-relay /taskslots，多同事防撞车）=====
+      var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
+      var coSlotsCache = { date: '', slots: [], claimed: [] };
+      function coTodayStr() {
+        var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+      }
+      function coNowStr() {
+        var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      }
+      function coSlotsGet(cb) {
+        var date = coTodayStr();
+        GM_xmlhttpRequest({
+          method: 'GET', url: RELAY + '/taskslots?date=' + encodeURIComponent(date), timeout: 4000,
+          onload: function (r) { try { var j = JSON.parse(r.responseText); if (j.ok) { coSlotsCache = { date: date, slots: j.slots || [], claimed: j.claimed || [] }; } cb(j); } catch (e) { cb({ ok: false, error: e.message }); } },
+          onerror: function () { cb({ ok: false, error: 'relay unreachable' }); },
+          ontimeout: function () { cb({ ok: false, error: 'timeout' }); }
+        });
+      }
+      function coSlotsSet(slots, cb) {
+        GM_xmlhttpRequest({
+          method: 'POST', url: RELAY + '/taskslots',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify({ date: coTodayStr(), slots: slots }), timeout: 8000,
+          onload: function (r) { try { cb(JSON.parse(r.responseText)); } catch (e) { cb({ ok: false, error: e.message }); } },
+          onerror: function () { cb({ ok: false, error: 'relay unreachable' }); },
+          ontimeout: function () { cb({ ok: false, error: 'timeout' }); }
+        });
+      }
+      function coSlotsClaim(startTime, who, info, cb) {
+        GM_xmlhttpRequest({
+          method: 'POST', url: RELAY + '/taskslots/claim',
+          headers: { 'Content-Type': 'application/json' },
+          data: JSON.stringify(Object.assign({ date: coTodayStr(), startTime: startTime, who: who }, info || {})), timeout: 8000,
+          onload: function (r) { try { cb(JSON.parse(r.responseText)); } catch (e) { cb({ ok: false, error: e.message }); } },
+          onerror: function () { cb({ ok: false, error: 'relay unreachable' }); },
+          ontimeout: function () { cb({ ok: false, error: 'timeout' }); }
+        });
+      }
+
+      // SSE 解析：优先从 event:raw result 事件拿完整文本，降级用 text_delta 累积
+      function coExtractContent(fullText) {
+        // 1. 优先：找 event:raw + eventType:result 里的完整 result 字段
+        var rawRe = /event:\s*raw[\s\S]*?"eventType"\s*:\s*"result"[\s\S]*?"result"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+        var rawM = rawRe.exec(fullText);
+        if (rawM) {
+          try { return JSON.parse('"' + rawM[1] + '"'); } catch(e) {}
+        }
+        // 2. 降级：累积所有 text_delta content 增量
+        var acc = '';
+        var re = /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+        var m;
+        while ((m = re.exec(fullText)) !== null) {
+          try { acc += JSON.parse('"' + m[1] + '"'); } catch(e) { acc += m[1]; }
+        }
+        if (!acc) {
+          var lines = fullText.split('\n');
+          for (var i = 0; i < lines.length; i++) {
+            if (/^[1-4][.、)]\s+/.test(lines[i].trim())) acc += lines[i].trim() + '\n';
+          }
+        }
+        return acc;
+      }
+      function coIsDone(fullText) { return /event:\s*done/.test(fullText) || /\[DONE\]/.test(fullText); }
+
+      // mindpad 对话生成提示词，首次新建专用会话并缓存，后续复用，失效再重建
+      function coLlmChat(closeupWord, sceneWord, articleTitle, productImg, onDone, onError) {
+        var CHATID_KEY = 'tuopin_co_chatid';
+        var imgPart = productImg ? '商品图片URL：' + productImg + '\n' : '';
+
+        // 根据填写情况组合任务描述
+        var taskDesc;
+        if (closeupWord && sceneWord) {
+          taskDesc = '用户给定的特写词是：【' + closeupWord + '】，场景词是：【' + sceneWord + '】。'
+            + '请在【' + sceneWord + '】的环境/场景背景下，以【' + closeupWord + '】为核心视觉风格，';
+        } else if (closeupWord) {
+          taskDesc = '用户给定的特写词是：【' + closeupWord + '】。'
+            + '请聚焦商品本身的特写细节，以【' + closeupWord + '】为视觉风格，';
+        } else {
+          taskDesc = '用户给定的场景词是：【' + sceneWord + '】。'
+            + '请根据该场景词，';
+        }
+
+        var message = '【独立请求】请忽略之前所有对话内容，这是一个全新的生成任务。\n'
+          + '【强制中文】整条提示词中不得出现任何英文单词、英文字母组合或拼音，包括镜头术语都必须用中文（如"特写"而非"close-up"，"暖光"而非"warm light"）。\n'
+          + imgPart
+          + '你是一个电商短视频提示词生成器。'
+          + (articleTitle ? '本次要展示的商品名称是：【' + articleTitle + '】。\n' : '')
+          + taskDesc
+          + '生成 2 条适合图生视频的动态场景提示词，每条用于生成一段 6 秒商品展示短视频。\n'
+          + '规则：①【重要】商品必须出现在画面正中心/前景，是视频主角；②描述动态动作（人物拿起/使用/享用商品、商品包装特写旋转等）；'
+          + '③描述环境氛围/镜头运动（推镜/拉镜/环绕/升降）；④不写品牌名，用中文通用词代替；'
+          + '⑤每条 30-60 字，画面感和动态感强；⑥单个连贯场景，严禁拼图/多格/分镜。\n'
+          + '输出格式（严格遵守，不要额外解释，不要前后缀，必须中文）：\n1. <中文提示词1>\n2. <中文提示词2>';
+
+        function createAndRun(doneCb, errCb) {
+          GM_xmlhttpRequest({
+            method: 'GET', url: MINDPAD + '/session/new?source=plugin&sourceRef=chrome_extension', timeout: 15000,
+            onload: function(r) {
+              var d; try { d = JSON.parse(r.responseText); } catch(e) { return errCb('解析失败'); }
+              var data = (d && d.data) || d || {};
+              var newId = data.chatId || data.sessionId || data.id || data.chat_id;
+              if (!newId) return errCb('未获取 chatId');
+              GM_setValue(CHATID_KEY, newId);
+              coLog('✓ 新建专用会话 ' + newId);
+              runChat(newId, doneCb, function() { errCb('会话异常，请重试'); });
+            },
+            onerror: function() { errCb('新建会话失败'); },
+            ontimeout: function() { errCb('新建会话超时'); }
+          });
+        }
+
+        var chatId = GM_getValue(CHATID_KEY, '');
+
+        function runChat(id, doneCb, failCb) {
+          var acc = '', finished = false;
+          GM_setValue(CHATID_KEY, id);
+          function finish() { if (finished) return; finished = true; doneCb(acc); }
+          // POST /session/chat 直接返回 SSE 流，用 onprogress 逐块读取
+          GM_xmlhttpRequest({
+            method: 'POST',
+            url: MINDPAD + '/session/chat?source=plugin&sourceRef=chrome_extension',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+            data: JSON.stringify({ chatId: id, message: message, modelName: 'glm-5v-turbo', source: 'plugin', sourceRef: 'chrome_extension' }),
+            timeout: 120000,
+            onprogress: function(resp) {
+              var full = resp.responseText || '';
+              acc = coExtractContent(full);
+              if (coIsDone(full)) finish();
+            },
+            onload: function(resp) {
+              acc = coExtractContent(resp.responseText || '');
+              if (!acc) { failCb('空响应'); return; }
+              finish();
+            },
+            onerror: function() { failCb('SSE 连接失败'); },
+            ontimeout: function() { finish(); }
+          });
+        }
+
+        function reconnectChat(id, doneCb, failCb) {
+          // 断线重连：GET subscribe 挂到正在运行的会话
+          var acc = '', finished = false;
+          function finish() { if (finished) return; finished = true; doneCb(acc); }
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url: MINDPAD + '/session/chat/subscribe?chatId=' + encodeURIComponent(id) + '&source=plugin&sourceRef=chrome_extension',
+            headers: { 'Accept': 'text/event-stream' },
+            timeout: 120000,
+            onprogress: function(resp) {
+              var full = resp.responseText || '';
+              acc = coExtractContent(full);
+              if (coIsDone(full)) finish();
+            },
+            onload: function(resp) {
+              acc = coExtractContent(resp.responseText || '');
+              finish();
+            },
+            onerror: function() { failCb('重连失败'); },
+            ontimeout: function() { finish(); }
+          });
+        }
+
+        // 每次都强制新建插件专用会话（不复用缓存，避免污染/误用用户当前会话）
+        coLog('→ 新建插件专用会话 (source=plugin)...');
+        createAndRun(onDone, onError);
+      }
+
+      // 图生图：提示词 + 商品图 → 图片 URL
+      function coGetStyleSuffix(title) {
+        var t = title || '';
+        // 烧烤/熟食/卤味/烤肉
+        if (/烤|卤|熏|炸|酱|腊|烧|扒|煎|焖|炖/.test(t)) {
+          return '，商业美食摄影，暗调暖光背景，专业侧逆光布光，烟雾蒸汽感，油脂光泽，高清细节，实拍质感，8K';
+        }
+        // 生鲜肉类
+        if (/牛|羊|猪|鸡|鸭|鹅|排骨|肋排|五花|里脊|肉/.test(t)) {
+          return '，电商生鲜摄影，浅色干净背景，精准冷白光，肉质纹理清晰，截面粉嫩饱满，高清实拍，8K';
+        }
+        // 海鲜水产
+        if (/鱼|虾|蟹|贝|蛤|蚌|海鲜|水产|鲜/.test(t)) {
+          return '，电商生鲜摄影，冰面或浅蓝背景，清透补光，海鲜光泽感，鲜活质感，高清实拍，8K';
+        }
+        // 水果
+        if (/苹果|梨|桃|李|杏|葡萄|橙|柠|芒|荔枝|龙眼|樱桃|草莓|蓝莓|西瓜|哈密|榴莲|猕猴桃|黄桃|水果/.test(t)) {
+          return '，电商水果摄影，白色简洁背景，均匀柔光，色彩高饱和真实，截面汁水感，产品细节清晰，高清实拍，8K';
+        }
+        // 糕点甜品
+        if (/蛋糕|饼|糕|酥|糖|巧克力|饼干|点心|甜品|布丁|慕斯/.test(t)) {
+          return '，电商甜品摄影，浅色或木质背景，柔和自然光，层次质感细腻，糖霜奶油细节清晰，高清实拍，8K';
+        }
+        // 丸子/速食/火锅
+        if (/丸|火锅|速食|方便|汤|锅|粉|面/.test(t)) {
+          return '，电商美食摄影，深色餐桌背景，侧光暖调，热气腾腾，汤汁浓郁光泽，高清实拍，8K';
+        }
+        // 酒水
+        if (/酒|白酒|红酒|啤酒|黄酒|葡萄酒|威士忌|洋酒|米酒|果酒/.test(t)) {
+          return '，电商酒水摄影，深色大理石或木质背景，精致侧逆光，瓶身高光通透，酒液色泽饱满，奢华质感，高清实拍，8K';
+        }
+        // 饮料/果汁
+        if (/饮料|果汁|汽水|可乐|茶饮|咖啡|奶茶|牛奶|豆浆|椰汁|功能饮|矿泉水|苏打水/.test(t)) {
+          return '，电商饮品摄影，简洁白色或渐变背景，清透冰爽氛围，瓶身水珠冷凝感，液体色彩鲜亮通透，高清实拍，8K';
+        }
+        // 茶叶
+        if (/茶|绿茶|红茶|乌龙|普洱|白茶|黑茶|花茶|茉莉|龙井|铁观音|大红袍/.test(t)) {
+          return '，电商茶叶摄影，原木或麻布纹理背景，柔和自然光，茶叶形态清晰，茶汤色泽通透，中式禅意氛围，高清实拍，8K';
+        }
+        // 保健品/滋补
+        if (/保健|滋补|营养|维生|胶囊|片剂|冲剂|燕窝|花胶|枸杞|红枣|阿胶|蜂蜜|人参|西洋参|灵芝/.test(t)) {
+          return '，电商保健品摄影，浅色简洁背景，精致产品摆盘，原料食材点缀，光线柔和均匀，高端品质感，高清实拍，8K';
+        }
+        // 粮油调味
+        if (/米|面|油|醋|酱油|盐|糖|淀粉|粮|杂粮|豆|花生|芝麻|调味|香料|辣椒|花椒/.test(t)) {
+          return '，电商粮油摄影，白色或木质背景，柔和自然光，产品形态饱满真实，食材质感细腻，色彩还原准确，高清实拍，8K';
+        }
+        // 休闲食品/零食
+        if (/零食|薯片|饼干|糖果|坚果|核桃|腰果|开心果|瓜子|花生|膨化|爆米花|肉脯|肉干|辣条|海苔/.test(t)) {
+          return '，电商休闲食品摄影，活泼明亮背景，俯拍或斜45度，零食堆叠散落摆盘，色彩鲜艳诱人，产品细节清晰，高清实拍，8K';
+        }
+        // 通用食品兜底
+        return '，电商商业摄影风格，背景干净简洁，精准专业布光，色彩饱和真实，产品细节清晰锐利，截面质感逼真，食欲感强，高清实拍质感，8K';
+      }
+
+      function coCreateImg(prompt, productImg, idx, onOk, onErr) {
+        var apiKey = GM_getValue(CO_KEY, '');
+        if (!apiKey) { onErr('未配置 API Key'); return; }
+        var imgUrls = [];
+        if (productImg) { var u = productImg + (productImg.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; imgUrls.push(u); }
+        var title = coGetArticleTitle ? coGetArticleTitle() : '';
+        var stylePrompt = prompt + coGetStyleSuffix(title);
+        // 前3张(idx 0-2)用即梦，后3张(idx 3-5)用GPT
+        var modelIdx = Math.floor(idx / 3) % IMG_MODELS.length;
+        var payload = {
+          model: IMG_MODELS[modelIdx], prompt: stylePrompt, resolution: IMG_RES,
+          upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc', public_host: 0 },
+          image_urls: imgUrls
+        };
+        GM_xmlhttpRequest({
+          method: 'POST', url: GW + '/ai-omni-auth/pictures/create_img',
+          headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+          data: JSON.stringify(payload), timeout: 120000,
+          onload: function (r) {
+            try {
+              var j = JSON.parse(r.responseText);
+              if (j.error_code !== 0) return onErr(j.error_msg || '生成失败');
+              var d = j.data;
+              var url = Array.isArray(d) ? d[0] : (d && d.file_url) || d;
+              if (!url) return onErr('返回无图: ' + (r.responseText || '').slice(0, 200));
+              onOk(String(url));
+            } catch (e) { onErr('解析失败: ' + e.message); }
+          },
+          onerror: function () { onErr('请求失败'); },
+          ontimeout: function () { onErr('请求超时'); }
+        });
+      }
+
+      // 图生视频：多图 + 提示词 → task_id（多图=多镜头合并）
+      function coSubmitVideo(prompt, imageUrls, modelIdx, onOk, onErr) {
+        var apiKey = GM_getValue(CO_KEY, '');
+        if (!apiKey) { onErr('未配置 API Key'); return; }
+        var vm = VID_MODELS[modelIdx % VID_MODELS.length];
+        var urls = imageUrls.map(function(u) { return u + (u.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; });
+        GM_xmlhttpRequest({
+          method: 'POST', url: GW + '/ai-omni-auth/video/submit_create_task',
+          headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+          data: JSON.stringify({ model: vm.id, prompt: prompt, video_time: vm.time, aspect_ratio: '16:9', resolution: vm.res, image_urls: urls }),
+          timeout: 30000,
+          onload: function (r) {
+            try {
+              var j = JSON.parse(r.responseText);
+              if (j.error_code !== 0) return onErr(j.error_msg || '提交失败');
+              var tid = j.data && j.data.task_id;
+              if (!tid) return onErr('无 task_id: ' + (r.responseText || '').slice(0, 200));
+              onOk(tid);
+            } catch (e) { onErr('解析失败: ' + e.message); }
+          },
+          onerror: function () { onErr('请求失败'); },
+          ontimeout: function () { onErr('请求超时'); }
+        });
+      }
+      // 轮询视频状态：task_id → video_url
+      function coPollVideo(taskId, onDone, onErr) {
+        var apiKey = GM_getValue(CO_KEY, '');
+        var n = 0;
+        var itv = setInterval(function () {
+          if (++n > 75) { clearInterval(itv); onErr('轮询超时(5min)'); return; }
+          GM_xmlhttpRequest({
+            method: 'POST', url: GW + '/ai-omni-auth/video/get_task_status',
+            headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
+            data: JSON.stringify({ model: VID_MODEL, task_id: taskId }),
+            timeout: 20000,
+            onload: function (r) {
+              try {
+                var j = JSON.parse(r.responseText);
+                if (j.error_code !== 0) { clearInterval(itv); onErr(j.error_msg || '查询失败'); return; }
+                var d = j.data || {};
+                if (d.status === 'succeeded') { clearInterval(itv); onDone(d.video_url); }
+                else if (d.status === 'failed') { clearInterval(itv); onErr('视频生成失败'); }
+              } catch (e) {}
+            },
+            onerror: function () {}, ontimeout: function () {}
+          });
+        }, 4000);
+      }
+
+      // 在当前页用隐藏 iframe 完成焦点图替换 + 加标签 + 保存
+      function coDoConfirmInPage(imgUrl, articleId, onDone) {
+        var editUrl = 'http://youhui.bgm.smzdm.com/edit_youhui/' + articleId;
+        var iframe = document.createElement('iframe');
+        iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;visibility:hidden;';
+        iframe.src = editUrl;
+        document.body.appendChild(iframe);
+        var timeout = setTimeout(function () {
+          document.body.removeChild(iframe);
+          onDone(false, 'iframe 超时');
+        }, 60000);
+        iframe.onload = function () {
+          try {
+            var doc = iframe.contentDocument || iframe.contentWindow.document;
+            function setV(el, val) {
+              var nativeSet = Object.getOwnPropertyDescriptor(iframe.contentWindow.HTMLInputElement.prototype, 'value').set;
+              nativeSet.call(el, val);
+              el.dispatchEvent(new iframe.contentWindow.Event('input', { bubbles: true }));
+              el.dispatchEvent(new iframe.contentWindow.Event('change', { bubbles: true }));
+            }
+            // 1. 填焦点图
+            var focusInput = doc.querySelector('[name="article_pic_url"]');
+            if (focusInput) {
+              setV(focusInput, imgUrl);
+              var container = focusInput.closest('tr') || (focusInput.parentElement && focusInput.parentElement.parentElement);
+              if (container) {
+                var fBtns = container.querySelectorAll('button, input[type="button"]');
+                for (var i = 0; i < fBtns.length; i++) {
+                  if ((fBtns[i].textContent.trim() === '获取' || fBtns[i].value === '获取') && fBtns[i].offsetParent !== null) {
+                    fBtns[i].click(); break;
+                  }
+                }
+              }
+            }
+            // 2. 加标签 "内容优化"
+            setTimeout(function () {
+              try {
+                var tagInput = doc.querySelector('#tag_name');
+                var addTagBtn = doc.querySelector('#add_new_tag');
+                if (tagInput && addTagBtn) {
+                  setV(tagInput, '内容优化');
+                  setTimeout(function () { addTagBtn.click(); }, 300);
+                }
+              } catch(e) {}
+              // 3. 循环点保存直到"保存成功"
+              setTimeout(function () {
+                var tries = 0;
+                var itv = setInterval(function () {
+                  try {
+                    var bodyText = doc.body.innerText || '';
+                    if (bodyText.indexOf('保存成功') >= 0) {
+                      clearInterval(itv); clearTimeout(timeout);
+                      document.body.removeChild(iframe);
+                      onDone(true, '保存成功');
+                      return;
+                    }
+                    if (tries++ > 12) {
+                      clearInterval(itv); clearTimeout(timeout);
+                      document.body.removeChild(iframe);
+                      onDone(false, '保存超时');
+                      return;
+                    }
+                    // 处理弹窗（确认/确定）
+                    var popBtns = doc.querySelectorAll('input[type="button"], input[type="submit"], button');
+                    for (var j = 0; j < popBtns.length; j++) {
+                      var pv = (popBtns[j].value || popBtns[j].textContent || '').trim();
+                      if ((pv === '确定' || pv === '确认') && popBtns[j].offsetParent !== null) {
+                        popBtns[j].click(); return;
+                      }
+                    }
+                    // 点保存修改
+                    var btns = doc.querySelectorAll('button, input[type="button"], input[type="submit"]');
+                    for (var k = 0; k < btns.length; k++) {
+                      var t = (btns[k].textContent || '').trim() || btns[k].value || '';
+                      if (t === '保存修改' && btns[k].offsetParent !== null) { btns[k].click(); break; }
+                    }
+                  } catch(e) {}
+                }, 1500);
+              }, 800);
+            }, 600);
+          } catch(e) {
+            clearTimeout(timeout);
+            try { document.body.removeChild(iframe); } catch(e2) {}
+            onDone(false, e.message);
+          }
+        };
+      }
+
+      // 解析模型输出的 4 条提示词：只取以 1/2/3/4 编号开头的行，过滤注意事项等非提示词内容
+      function coParsePrompts(text) {
+        var out = [];
+        var lines = (text || '').split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var raw = lines[i].trim();
+          if (!/^[1-2][.、)]\s+/.test(raw)) continue;
+          var ln = raw.replace(/^[1-2][.、)]\s+/, '').trim();
+          if (ln && ln.length > 10 && /[一-龥]/.test(ln)) out.push(ln + '不改变商品形态');
+        }
+        return out.slice(-2);
+      }
+
+      // 面板
+      function build() {
+        var coCollapsed = GM_getValue('tuopin_co_collapsed', '') === '1';
+        var coArrow = coCollapsed ? '▶' : '▼';
+        var panel = document.createElement('div');
+        panel.id = 'tuopin-co-panel';
+        panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:10px;width:270px;font-family:-apple-system,sans-serif;font-size:13px;';
+        var coIsAdmin = false; // 由 SSO 异步确认是否为 handongxue
+        var coActiveTab = GM_getValue('tuopin_active_tab', 'optimize');
+        // datetime 工具：本地时间字符串转 datetime-local 值
+        function coLocalDt(d) {
+          var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+          return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        }
+        var startDt = new Date(); startDt.setMinutes(startDt.getMinutes() + 1);
+        var endDt = new Date(startDt); endDt.setMinutes(endDt.getMinutes() + 59);
+        var tabBtnStyle = 'flex:1;padding:5px 0;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;';
+        function tabStyle(key) { return tabBtnStyle + (coActiveTab===key ? 'color:#ff7a00;border-bottom:2px solid #ff7a00;margin-bottom:-2px;' : 'color:#999;'); }
+        var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (coCollapsed ? '0' : '4px') + ';">'
+          + '<div style="display:flex;align-items:center;gap:6px;">'
+          + '<button id="tuopin-co-toggle" style="border:none;background:none;cursor:pointer;color:#666;font-size:11px;line-height:1;padding:0;">' + coArrow + '</button>'
+          + '<span style="font-weight:600;color:#ff7a00;">拓品助手</span></div>'
+          + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
+          + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
+          + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
+          + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
+          + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
+          + '<button id="co-tab-btn-task" style="' + tabStyle('task') + '">任务</button>'
+          + '</div>'
+          + '<div id="co-tab-optimize" style="display:' + (coActiveTab==='optimize' ? 'block' : 'none') + ';">'
+          + '<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">'
+          + '<span id="tuopin-co-cog" style="cursor:pointer;color:#999;font-size:12px;">⚙ Key</span></div>'
+          + '<div id="tuopin-co-settings" style="display:none;margin-bottom:8px;padding:8px;background:#f9f9f9;border-radius:6px;">'
+          + '<input id="tuopin-co-key" type="password" placeholder="gw-openapi Bearer Key" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;margin-bottom:4px;">'
+          + '<button id="tuopin-co-savekey" style="width:100%;padding:5px;background:#1890ff;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">保存 Key</button></div>'
+          + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">'
+          + '<div><label style="color:#666;font-size:11px;">特写词</label>'
+          + '<input id="tuopin-co-closeup" type="text" placeholder="如：美味有食欲" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div><label style="color:#666;font-size:11px;">场景词</label>'
+          + '<input id="tuopin-co-scene" type="text" placeholder="如：露营、聚会" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '</div>'
+          + '<button id="tuopin-co-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;">优化头图</button>'
+          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">图生图</div>'
+          + '<div id="tuopin-co-images" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px;"></div>'
+          + '<div id="tuopin-co-prompts" style="margin-bottom:8px;"></div>'
+          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">图生视频</div>'
+          + '<div id="tuopin-co-videos" style="margin-bottom:8px;"></div>'
+          + '<div id="tuopin-co-confirm-area" style="display:none;margin-bottom:6px;">'
+          + '<div style="display:flex;gap:6px;">'
+          + '<button id="tuopin-co-confirm-btn" style="flex:1;padding:7px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">✓ 确认焦点图</button>'
+          + '<button id="tuopin-co-confirm-vid-btn" style="flex:1;padding:7px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">▶ 确认视频图</button>'
+          + '</div></div>'
+          + '<div id="tuopin-co-status" style="color:#1890ff;font-size:11px;margin-top:6px;"></div>'
+          + '<div id="tuopin-co-log" style="max-height:90px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:6px;font-size:11px;line-height:1.5;color:#666;"></div>'
+          + '<div id="tuopin-co-history" style="margin-top:8px;border-top:1px solid #eee;padding-top:6px;"></div>'
+          + '</div>'
+          // ── 代码植入 tab ──
+          + '<div id="co-tab-inject" style="display:' + (coActiveTab==='inject' ? 'block' : 'none') + ';">'
+          + '<textarea id="tuopin-inject-code" rows="7" style="width:100%;padding:5px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;" placeholder="粘贴要植入的 HTML 代码"></textarea>'
+          + '<button id="tuopin-inject-go" style="width:100%;padding:7px;background:#1890ff;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;margin-top:6px;">植入代码</button>'
+          + '<div id="tuopin-inject-log" style="margin-top:6px;max-height:60px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:6px;font-size:11px;line-height:1.5;color:#666;"></div>'
+          + '<div id="tuopin-inject-history" style="margin-top:8px;border-top:1px solid #eee;padding-top:6px;max-height:120px;overflow-y:auto;"></div>'
+          + '</div>'
+          // ── 任务 tab ──
+          + '<div id="co-tab-task" style="display:' + (coActiveTab==='task' ? 'block' : 'none') + ';">'
+          + '<div style="margin-bottom:8px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">文章链接</label>'
+          + '<input id="tuopin-task-arturl" type="text" value="https://www.smzdm.com/p/' + CO_ARTICLE_ID + '/" style="width:100%;padding:4px 5px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;"></div>'
+          + '<div id="tuopin-task-remain" style="font-size:11px;color:#999;margin-bottom:2px;text-align:center;">今日还剩 <span id="tuopin-task-remain-num" style="color:#ff4d4f;font-weight:600;">0</span> 个点赞收藏任务可配置</div>'
+          + '<div id="tuopin-task-next-slot" style="font-size:10px;color:#666;margin-bottom:6px;text-align:center;">最近可配置：<span id="tuopin-task-next-slot-val" style="color:#1890ff;">—</span></div>'
+          + '<button id="tuopin-task-go" style="width:100%;padding:7px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">发布任务</button>'
+          + '<div id="tuopin-task-log" style="margin-top:6px;font-size:11px;color:#1890ff;"></div>'
+          + '<div id="tuopin-task-admin-panel" style="display:' + (coIsAdmin ? 'block' : 'none') + ';margin-top:8px;border-top:2px dashed #ffcc80;padding-top:8px;">'
+          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:6px;">🔒 管理员专属</div>'
+          + '<div style="margin-bottom:8px;">'
+          + '<div style="display:flex;align-items:center;gap:3px;margin-bottom:4px;">'
+          + '<label style="color:#666;font-size:11px;white-space:nowrap;width:36px;flex-shrink:0;">活动ID</label>'
+          + '<select id="tuopin-task-actid-sel" style="flex:0 0 58px;padding:2px 3px;border:1px solid #ddd;border-radius:4px;font-size:11px;"></select>'
+          + '<input id="tuopin-task-actid-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '<button id="tuopin-task-actid-add" style="padding:2px 5px;font-size:10px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button>'
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:3px;">'
+          + '<label style="color:#666;font-size:11px;white-space:nowrap;width:36px;flex-shrink:0;">奖励ID</label>'
+          + '<select id="tuopin-task-rewardid-sel" style="flex:0 0 58px;padding:2px 3px;border:1px solid #ddd;border-radius:4px;font-size:11px;"></select>'
+          + '<input id="tuopin-task-rewardid-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '<button id="tuopin-task-rewardid-add" style="padding:2px 5px;font-size:10px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button>'
+          + '</div>'
+          + '</div>'
+          + '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">今日时间排序</label>'
+          + '<div id="tuopin-task-slot-display" style="max-height:40px;overflow-y:auto;border:1px solid #f0f0f0;border-radius:4px;padding:3px 5px;margin-bottom:5px;background:#fafafa;"></div>'
+          + '<div id="tuopin-task-slot-edit" style="display:none;">'
+          + '<textarea id="tuopin-task-timesort" rows="4" placeholder="每行：开始<Tab>结束\n10:00:00\t11:00:00" style="width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;"></textarea>'
+          + '</div>'
+          + '<div style="display:flex;gap:4px;margin-top:4px;">'
+          + '<button id="tuopin-task-slot-edit-btn" style="flex:1;padding:5px;background:#fff;color:#666;border:1px solid #ddd;border-radius:4px;font-size:11px;cursor:pointer;">编辑</button>'
+          + '<button id="tuopin-task-slot-confirm-btn" style="flex:1;padding:5px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">确定</button>'
+          + '</div>'
+          + '<div id="tuopin-task-sortlog" style="font-size:10px;color:#52c41a;margin-top:3px;"></div>'
+          + '</div>'
+          + '<div style="margin-top:10px;border-top:1px dashed #ffcc80;padding-top:6px;">'
+          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:4px;">今日各时段配置情况（全同事）</div>'
+          + '<div id="tuopin-task-done-today" style="max-height:260px;overflow-y:auto;font-size:10px;color:#666;"></div>'
+          + '</div></div>'
+          + '</div>';
+        panel.innerHTML = h;
+        getRightStack().appendChild(panel);
+
+        // 异步请求 SSO 门户识别登录人，仅 handongxue 激活管理员模式
+        GM_xmlhttpRequest({
+          method: 'GET', url: 'https://sso-bgm.smzdm.com/uas-sso/root/auth/app_list.action', timeout: 6000,
+          onload: function(r) {
+            try {
+              var m = r.responseText.match(/欢\s*迎\s*([\w]+)登录/);
+              if (m && m[1] === 'handongxue') {
+                coIsAdmin = true;
+                var adminPanel = document.getElementById('tuopin-task-admin-panel');
+                if (adminPanel) adminPanel.style.display = 'block';
+              }
+            } catch(e) {}
+          },
+          onerror: function() {}
+        });
+
+        // 折叠/展开（持久化：手动折叠后下次仍折叠，需手动展开）
+        var coToggleBtn = document.getElementById('tuopin-co-toggle');
+        if (coToggleBtn) coToggleBtn.onclick = function () {
+          var now = GM_getValue('tuopin_co_collapsed', '') === '1';
+          GM_setValue('tuopin_co_collapsed', now ? '' : '1');
+          var body = document.getElementById('tuopin-co-body');
+          if (body) body.style.display = now ? 'block' : 'none';
+          coToggleBtn.textContent = now ? '▼' : '▶';
+        };
+
+        // Tab 切换
+        function coSwitchTab(key) {
+          GM_setValue('tuopin_active_tab', key);
+          ['optimize','inject','task'].forEach(function(k) {
+            var body = document.getElementById('co-tab-' + k);
+            var btn = document.getElementById('co-tab-btn-' + k);
+            if (body) body.style.display = k === key ? 'block' : 'none';
+            if (btn) {
+              if (k === key) {
+                btn.style.color = '#ff7a00';
+                btn.style.borderBottom = '2px solid #ff7a00';
+                btn.style.marginBottom = '-2px';
+              } else {
+                btn.style.color = '#999';
+                btn.style.borderBottom = 'none';
+                btn.style.marginBottom = '0';
+              }
+            }
+          });
+        }
+        ['optimize','inject','task'].forEach(function(k) {
+          var btn = document.getElementById('co-tab-btn-' + k);
+          if (btn) btn.onclick = function() { coSwitchTab(k); };
+        });
+
+        // 代码植入 tab 日志
+        function injectLog(msg) {
+          var box = document.getElementById('tuopin-inject-log');
+          if (!box) return;
+          var line = document.createElement('div'); line.textContent = msg;
+          box.appendChild(line); box.scrollTop = box.scrollHeight;
+        }
+
+        // 代码植入历史记录渲染（始终显示该板块，空时提示；默认10条，可展开滚动查看全部）
+        var coInjectHistExpanded = false;
+        function coRenderInjectHistory() {
+          var box = document.getElementById('tuopin-inject-history');
+          if (!box) return;
+          var hist = [];
+          try { hist = JSON.parse(GM_getValue('tuopin_inject_history', '[]')); } catch(e) {}
+          if (!hist.length) {
+            box.innerHTML = '<div style="font-size:10px;color:#999;margin-bottom:4px;">往期植入记录</div>'
+              + '<div style="color:#bbb;font-size:10px;text-align:center;padding:4px;">暂无植入记录</div>';
+            return;
+          }
+          var all = hist.slice().reverse();
+          var LIMIT = 10;
+          var list = coInjectHistExpanded ? all : all.slice(0, LIMIT);
+          var html = '<div style="font-size:10px;color:#999;margin-bottom:4px;">往期植入记录</div>';
+          list.forEach(function(r) {
+            html += '<div style="padding:3px 0;border-bottom:1px solid #f5f5f5;font-size:10px;color:#666;cursor:pointer;" data-code="' + encodeURIComponent(r.code) + '">'
+              + '<span style="color:#1890ff;">[' + r.time + ']</span> '
+              + '<span style="color:#333;">' + r.preview + '</span></div>';
+          });
+          if (all.length > LIMIT) {
+            html += '<div id="tuopin-inject-history-toggle" style="text-align:center;color:#1890ff;font-size:10px;padding:4px;cursor:pointer;">'
+              + (coInjectHistExpanded ? '收起 ▲' : '展开全部（' + all.length + ' 条）▼') + '</div>';
+          }
+          box.innerHTML = html;
+          // 点击记录回填 textarea
+          box.querySelectorAll('[data-code]').forEach(function(el) {
+            el.onclick = function() {
+              var ta = document.getElementById('tuopin-inject-code');
+              if (ta) ta.value = decodeURIComponent(el.getAttribute('data-code'));
+            };
+          });
+          var toggle = document.getElementById('tuopin-inject-history-toggle');
+          if (toggle) toggle.onclick = function(){ coInjectHistExpanded = !coInjectHistExpanded; coRenderInjectHistory(); };
+        }
+        coRenderInjectHistory();
+
+        // 代码植入 确认按钮 — 取 textarea 内容存储后打开后台执行
+        var injectBtn = document.getElementById('tuopin-inject-go');
+        if (injectBtn) injectBtn.onclick = function() {
+          var code = (document.getElementById('tuopin-inject-code').value || '').trim();
+          if (!code) return alert('请填写要植入的代码');
+          GM_setValue('tuopin_inject_code', code);
+          // 存入历史记录
+          var hist = [];
+          try { hist = JSON.parse(GM_getValue('tuopin_inject_history', '[]')); } catch(e) {}
+          var now = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
+          var timeStr = p(now.getMonth()+1)+'-'+p(now.getDate())+' '+p(now.getHours())+':'+p(now.getMinutes());
+          hist.push({ time: timeStr, preview: code.replace(/<[^>]+>/g,'').slice(0,20) || code.slice(0,20), code: code });
+          if (hist.length > 20) hist = hist.slice(-20);
+          GM_setValue('tuopin_inject_history', JSON.stringify(hist));
+          coRenderInjectHistory();
+          injectLog('→ 后台静默执行代码植入...');
+          GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_inject=1', { active: false, insert: true });
+        };
+
+        // 任务 tab 队列渲染
+        // 渲染：时段展示 + 剩余数 + 最近可配置（基于共享端缓存）
+        function coRenderSlotsAll() {
+          var slots = coSlotsCache.slots || [];
+          var claimed = coSlotsCache.claimed || [];
+          var claimedSet = {};
+          claimed.forEach(function(c){ claimedSet[c.startTime] = c; });
+          var nowStr = coNowStr();
+          var avail = slots.filter(function(s){ return !claimedSet[s.startTime] && (s.startTime||'') > nowStr; });
+          avail.sort(function(a,b){ return (a.startTime||'').localeCompare(b.startTime||''); });
+
+          // 时段展示列表
+          var disp = document.getElementById('tuopin-task-slot-display');
+          if (disp) {
+            if (!slots.length) {
+              disp.innerHTML = '<div style="color:#bbb;text-align:center;padding:6px;">今日未配置时段，点"编辑"录入</div>';
+            } else {
+              var html = '';
+              slots.forEach(function(s){
+                var st = (s.startTime||'').slice(11,16), et = (s.endTime||'').slice(11,16);
+                var cl = claimedSet[s.startTime];
+                var past = (s.startTime||'') <= nowStr;
+                var tag = cl ? '<span style="color:#bbb;">已配('+ (cl.who||'') +')</span>'
+                        : (past ? '<span style="color:#d9d9d9;">已过</span>' : '<span style="color:#52c41a;">可配</span>');
+                html += '<div style="padding:3px 0;border-bottom:1px solid #f0f0f0;display:flex;justify-content:space-between;font-size:10px;">'
+                  + '<span style="color:#333;">'+st+'~'+et+'</span>'+tag+'</div>';
+              });
+              disp.innerHTML = html;
+            }
+          }
+          // 剩余数
+          var numEl = document.getElementById('tuopin-task-remain-num');
+          if (numEl) numEl.textContent = avail.length;
+          // 最近可配置
+          var slotEl = document.getElementById('tuopin-task-next-slot-val');
+          if (slotEl) {
+            if (!avail.length) { slotEl.textContent='无（已无可配时段）'; slotEl.style.color='#ff4d4f'; }
+            else { slotEl.textContent=(avail[0].startTime||'').slice(11,16)+'~'+(avail[0].endTime||'').slice(11,16); slotEl.style.color='#1890ff'; }
+          }
+        }
+
+        // 今日各时段配置情况（全同事，来自共享端 claimed，按当前选中活动ID过滤明细；默认5条，可展开滚动查看全部）
+        var coTaskDoneExpanded = false;
+        function coRenderTaskDoneToday() {
+          var box = document.getElementById('tuopin-task-done-today');
+          if (!box) return;
+          var slots = coSlotsCache.slots || [];
+          var claimed = coSlotsCache.claimed || [];
+          var curActId = (coIsAdmin ? (document.getElementById('tuopin-task-actid-sel') || {}).value : '') || GM_getValue('tuopin_actid_cur', '1261');
+          var claimedMap = {};
+          claimed.forEach(function(c){ claimedMap[c.startTime] = c; });
+          if (!slots.length) { box.innerHTML = '<div style="color:#bbb;text-align:center;padding:4px;">今日未配置时段</div>'; return; }
+          var items = [];
+          slots.forEach(function(s){
+            var cl = claimedMap[s.startTime];
+            var st = (s.startTime||'').slice(11,16), et = (s.endTime||'').slice(11,16);
+            var timeStr = st + '~' + et;
+            if (!cl) {
+              // 未配置，不显示
+              return;
+            }
+            if ((cl.activityId || '') !== curActId) {
+              items.push('<div style="padding:4px 0;border-bottom:1px solid #f5f5f5;">'
+                + '<div style="color:#999;font-size:11px;">已配（' + (cl.who||'') + '·活动' + (cl.activityId||'') + '）</div>'
+                + '<div style="color:#ccc;font-size:9px;margin-top:1px;">' + timeStr + '</div>'
+                + '</div>');
+              return;
+            }
+            items.push('<div style="padding:4px 0;border-bottom:1px solid #f5f5f5;">'
+              + '<div style="color:#52c41a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (cl.description||'-') + '</div>'
+              + '<div style="color:#999;font-size:9px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+              + timeStr + '&nbsp;·&nbsp;' + (cl.who||'') + '&nbsp;·&nbsp;<a href="' + (cl.articleUrl||'') + '" target="_blank" style="color:#1890ff;">' + (cl.articleId||'-') + '</a>'
+              + '&nbsp;¥' + (cl.price||'-') + '</div>'
+              + '</div>');
+          });
+          var html = '<div style="color:#bbb;font-size:9px;margin-bottom:3px;">仅展开活动ID：' + curActId + ' 的明细</div>';
+          if (!items.length) { html += '<div style="color:#bbb;text-align:center;padding:6px;">今日暂无配置记录</div>'; box.innerHTML = html; return; }
+          var LIMIT = 5;
+          var show = coTaskDoneExpanded ? items : items.slice(0, LIMIT);
+          html += show.join('');
+          if (items.length > LIMIT) {
+            html += '<div id="tuopin-task-done-toggle" style="text-align:center;color:#1890ff;font-size:10px;padding:4px;cursor:pointer;">'
+              + (coTaskDoneExpanded ? '收起 ▲' : '展开全部（' + items.length + ' 条）▼') + '</div>';
+          }
+          box.innerHTML = html;
+          var toggle = document.getElementById('tuopin-task-done-toggle');
+          if (toggle) toggle.onclick = function(){ coTaskDoneExpanded = !coTaskDoneExpanded; coRenderTaskDoneToday(); };
+        }
+
+        // 本地缓存键（slots + claimed 一起存，打开页面秒渲染）
+        var CO_SLOTS_CACHE_KEY = 'tuopin_slots_cache';
+        function coLoadLocalCache() {
+          try { return JSON.parse(GM_getValue(CO_SLOTS_CACHE_KEY, '{}')); } catch(e) { return {}; }
+        }
+        function coSaveLocalCache(slots, claimed) {
+          GM_setValue(CO_SLOTS_CACHE_KEY, JSON.stringify({ slots: slots, claimed: claimed, at: coTodayStr() }));
+        }
+
+        // 展示用本地缓存（秒显），后台静默拉 relay 更新缓存
+        // 发布任务时单独实时拉 relay（见下方 taskGoBtn.onclick）
+        function coRefreshSlots() {
+          // 1. 本地缓存立即渲染（日期替换为今天，防止缓存带着昨天日期）
+          var cache = coLoadLocalCache();
+          if (cache.at === coTodayStr() && (cache.slots || []).length) {
+            var _today = coTodayStr();
+            coSlotsCache.slots = (cache.slots || []).map(function(s){
+              return { startTime: _today + (s.startTime||'').slice(10), endTime: _today + (s.endTime||'').slice(10) };
+            });
+            coSlotsCache.claimed = cache.claimed || [];
+            coRenderSlotsAll();
+            coRenderTaskDoneToday();
+          }
+          // 2. 后台静默拉 relay，有变动则更新缓存并重渲
+          var btn = document.getElementById('tuopin-task-go');
+          coSlotsGet(function(data){
+            var newClaimed = coSlotsCache.claimed || [];
+            var todayStr = coTodayStr();
+            var rawSlots = coSlotsCache.slots || [];
+            // relay 返回的 slots 日期替换为今天（防止 relay 存的是昨天的日期）
+            var newSlots = rawSlots.map(function(s){
+              return {
+                startTime: todayStr + (s.startTime||'').slice(10),
+                endTime: todayStr + (s.endTime||'').slice(10)
+              };
+            });
+            if (!newSlots.length) {
+              try {
+                var localPattern = JSON.parse(GM_getValue('tuopin_task_schedule','[]'));
+                // 把本地存储的时间段日期部分替换为今天，实现每天自动复用配置
+                newSlots = localPattern.map(function(s){
+                  return {
+                    startTime: todayStr + (s.startTime||'').slice(10),
+                    endTime: todayStr + (s.endTime||'').slice(10)
+                  };
+                });
+              } catch(e){}
+            }
+            coSlotsCache.slots = newSlots;
+            coSaveLocalCache(newSlots, newClaimed);
+            GM_setValue('tuopin_task_schedule', JSON.stringify(newSlots));
+            coRenderSlotsAll();
+            coRenderTaskDoneToday();
+            if (btn) { btn.disabled = false; btn.textContent = '发布任务'; btn.style.background = '#ff7a00'; }
+          });
+        }
+        coRefreshSlots();
+
+        // 管理员电脑自动静默注册到 relay 名单（复用 taskslots，date="_admin_seats_"）
+        if (coIsAdmin) {
+          var _machineId = GM_getValue('tuopin_machine_id', '');
+          if (!_machineId) { _machineId = 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); GM_setValue('tuopin_machine_id', _machineId); }
+        }
+
+        // 活动/奖励 ID：下拉框 + 新增（历史存 GM，形式同补贴填邮箱）
+        function dsLoadIdList(key, defaults) {
+          var list = [];
+          try { list = JSON.parse(GM_getValue(key, '[]')); } catch(e) {}
+          if (!list.length) list = defaults.slice();
+          return list;
+        }
+        function dsSaveIdList(key, list) { GM_setValue(key, JSON.stringify(list)); }
+        function dsRefreshIdSelect(selId, list, current) {
+          var sel = document.getElementById(selId);
+          if (!sel) return;
+          sel.innerHTML = '';
+          list.forEach(function(v){
+            var opt = document.createElement('option');
+            opt.value = v; opt.textContent = v;
+            if (v === current) opt.selected = true;
+            sel.appendChild(opt);
+          });
+          if (!list.length) { var o = document.createElement('option'); o.value = ''; o.textContent = '（无）'; sel.appendChild(o); }
+        }
+        var actIdList = dsLoadIdList('tuopin_actid_list', ['1261']);
+        var rewardIdList = dsLoadIdList('tuopin_rewardid_list', ['9398']);
+        var curActId = GM_getValue('tuopin_actid_cur', '1261');
+        var curRewardId = GM_getValue('tuopin_rewardid_cur', '9398');
+        dsRefreshIdSelect('tuopin-task-actid-sel', actIdList, curActId);
+        dsRefreshIdSelect('tuopin-task-rewardid-sel', rewardIdList, curRewardId);
+        var actidSel = document.getElementById('tuopin-task-actid-sel');
+        if (actidSel) actidSel.onchange = function(){ GM_setValue('tuopin_actid_cur', this.value); coRenderTaskDoneToday(); };
+        var rewardidSel = document.getElementById('tuopin-task-rewardid-sel');
+        if (rewardidSel) rewardidSel.onchange = function(){ GM_setValue('tuopin_rewardid_cur', this.value); };
+        var actidAdd = document.getElementById('tuopin-task-actid-add');
+        if (actidAdd) actidAdd.onclick = function(){
+          var v = (document.getElementById('tuopin-task-actid-input').value || '').trim();
+          if (!v) return;
+          if (actIdList.indexOf(v) < 0) { actIdList.push(v); dsSaveIdList('tuopin_actid_list', actIdList); }
+          GM_setValue('tuopin_actid_cur', v);
+          dsRefreshIdSelect('tuopin-task-actid-sel', actIdList, v);
+          document.getElementById('tuopin-task-actid-input').value = '';
+        };
+        var rewardidAdd = document.getElementById('tuopin-task-rewardid-add');
+        if (rewardidAdd) rewardidAdd.onclick = function(){
+          var v = (document.getElementById('tuopin-task-rewardid-input').value || '').trim();
+          if (!v) return;
+          if (rewardIdList.indexOf(v) < 0) { rewardIdList.push(v); dsSaveIdList('tuopin_rewardid_list', rewardIdList); }
+          GM_setValue('tuopin_rewardid_cur', v);
+          dsRefreshIdSelect('tuopin-task-rewardid-sel', rewardIdList, v);
+          document.getElementById('tuopin-task-rewardid-input').value = '';
+        };
+
+        // 时间排序：编辑 / 确定 两个按钮
+        var slotEditBtn = document.getElementById('tuopin-task-slot-edit-btn');
+        if (slotEditBtn) slotEditBtn.onclick = function() {
+          var ta = document.getElementById('tuopin-task-timesort');
+          // 优先用 relay 已同步的 slots，其次本地存储
+          var slots = coSlotsCache.slots && coSlotsCache.slots.length ? coSlotsCache.slots : [];
+          if (!slots.length) { try { slots = JSON.parse(GM_getValue('tuopin_task_schedule','[]')); } catch(e){} }
+          if (ta && !ta.value.trim()) {
+            ta.value = slots.map(function(s){ return (s.startTime||'').slice(11) + '\t' + (s.endTime||'').slice(11); }).join('\n');
+          }
+          document.getElementById('tuopin-task-slot-edit').style.display = 'block';
+          document.getElementById('tuopin-task-slot-display').style.display = 'none';
+        };
+
+        var slotConfirmBtn = document.getElementById('tuopin-task-slot-confirm-btn');
+        if (slotConfirmBtn) slotConfirmBtn.onclick = function() {
+          var raw = (document.getElementById('tuopin-task-timesort').value || '').trim();
+          if (!raw) return alert('请填写时间段');
+          var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+          var now = new Date();
+          var tp = function(n){return n<10?'0'+n:''+n;};
+          var dateStr = now.getFullYear()+'-'+tp(now.getMonth()+1)+'-'+tp(now.getDate());
+          var nextDate = new Date(now); nextDate.setDate(nextDate.getDate() + 1);
+          var nextDateStr = nextDate.getFullYear()+'-'+tp(nextDate.getMonth()+1)+'-'+tp(nextDate.getDate());
+          var slots = [];
+          lines.forEach(function(line){
+            var cols = line.split(/\t|\s+/).map(function(s){return s.trim();}).filter(Boolean);
+            if (cols.length >= 2) {
+              var st = cols[0], et = cols[1];
+              var startFull = dateStr + ' ' + st;
+              var endFull = (/^0:00:00$|^00:00:00$/.test(et)) ? nextDateStr + ' ' + et : dateStr + ' ' + et;
+              slots.push({ startTime: startFull, endTime: endFull });
+            }
+          });
+          if (!slots.length) return alert('未识别到有效时间段');
+          var logEl = document.getElementById('tuopin-task-sortlog');
+          if (logEl) logEl.textContent = '⏳ 正在保存到共享端...';
+          // 保存到共享端 + 本地兜底（不清除本地）
+          coSlotsSet(slots, function(res){
+            if (res && res.ok) {
+              GM_setValue('tuopin_task_schedule', JSON.stringify(slots));
+              if (logEl) logEl.textContent = '✓ 已保存 ' + slots.length + ' 个时段到共享端';
+              // 切回展示
+              document.getElementById('tuopin-task-slot-edit').style.display = 'none';
+              document.getElementById('tuopin-task-slot-display').style.display = 'block';
+              coRefreshSlots();
+            } else {
+              if (logEl) logEl.textContent = '✗ 保存失败：' + (res && res.error || 'relay unreachable') + '（仅存本地）';
+              GM_setValue('tuopin_task_schedule', JSON.stringify(slots));
+              document.getElementById('tuopin-task-slot-edit').style.display = 'none';
+              document.getElementById('tuopin-task-slot-display').style.display = 'block';
+              coRefreshSlots();
+            }
+          });
+        };
+
+        // 任务 发布按钮
+        var taskGoBtn = document.getElementById('tuopin-task-go');
+        if (taskGoBtn) taskGoBtn.onclick = function() {
+          var artUrl = (document.getElementById('tuopin-task-arturl').value || '').trim();
+          if (!artUrl) return alert('请填写文章链接');
+          var artIdMatch = artUrl.match(/\/p\/(\d+)/);
+          var artId = artIdMatch ? artIdMatch[1] : artUrl;
+          var fullArtUrl = artUrl.indexOf('smzdm.com') >= 0 ? artUrl : 'https://www.smzdm.com/p/' + artId + '/';
+          var actId = coIsAdmin ? ((document.getElementById('tuopin-task-actid-sel') || {}).value || '1261').trim() : '1261';
+          var rewardId = coIsAdmin ? ((document.getElementById('tuopin-task-rewardid-sel') || {}).value || '9398').trim() : '9398';
+          var who = (GM_getValue('tuopin_my_name', '') || '匿名');
+
+          // 预先算好完整文案（与 task-bgm 自动填表保持一致）
+          var articleTitle = coGetArticleTitle ? coGetArticleTitle() : '';
+          var taskName = articleTitle.replace(/[【】\[\]「」『』]/g, '').slice(0, 7);
+          var priceMatch = (document.body.innerText || '').match(/到手价([\d.]+)元/);
+          var price = priceMatch ? priceMatch[1] : '';
+          var productName = articleTitle.replace(/.*到手价[\d.]*元[，,]?/, '')
+            .replace(/淘金币到手价[\d.]+元[，,]?/, '').replace(/折[\d.]+元\/件[，,]?/, '')
+            .replace(/^[\s,，]+/, '').trim() || articleTitle;
+          var pricePart = price ? ('，到手价' + price + '元') : '';
+          var actionPart = '，点赞收藏获得抽奖';
+          var maxNameLen = 42 - pricePart.length - actionPart.length;
+          if (productName.length > maxNameLen && maxNameLen > 0) productName = productName.slice(0, maxNameLen);
+          var description = productName + pricePart + actionPart;
+
+          // 从共享端找可配时段并 claim（原子），失败则提示
+          coSlotsGet(function(data){
+            var slots = coSlotsCache.slots || [];
+            var claimed = coSlotsCache.claimed || [];
+            var claimedSet = {};
+            claimed.forEach(function(c){ claimedSet[c.startTime] = c; });
+            var nowStr = coNowStr();
+            var slot = slots.filter(function(s){ return !claimedSet[s.startTime] && (s.startTime||'') > nowStr; })
+              .sort(function(a,b){ return (a.startTime||'').localeCompare(b.startTime||''); })[0];
+            if (!slot) {
+              alert('当前无可配置时段（今日时段已用完或未配置）');
+              return;
+            }
+            var claimInfo = {
+              endTime: slot.endTime, taskName: taskName, description: description,
+              articleId: artId, articleUrl: fullArtUrl, price: price,
+              activityId: actId, rewardId: rewardId
+            };
+            coSlotsClaim(slot.startTime, who, claimInfo, function(claimRes){
+              if (!claimRes || !claimRes.ok) {
+                alert('该时段已被他人配置：' + (claimRes && claimRes.claimedBy || '') + '，请刷新后重试');
+                coRefreshSlots();
+                return;
+              }
+              var startTime = slot.startTime, endTime = slot.endTime;
+              var now = new Date(); var pn = function(n){return n<10?'0'+n:''+n;};
+              var params = {
+                articleId: artId, articleUrl: fullArtUrl, taskName: taskName,
+                articleTitle: articleTitle, description: description, price: price,
+                activityId: actId, rewardId: rewardId,
+                startTime: startTime, endTime: endTime, who: who,
+                submitTime: now.getFullYear()+'-'+pn(now.getMonth()+1)+'-'+pn(now.getDate())+' '+pn(now.getHours())+':'+pn(now.getMinutes())+':'+pn(now.getSeconds())
+              };
+              GM_setValue('tuopin_pending_task', JSON.stringify(params));
+              coRefreshSlots();
+              var logEl = document.getElementById('tuopin-task-log');
+              if (logEl) logEl.textContent = '→ 已锁定时段 ' + startTime.slice(11,16) + '~' + endTime.slice(11,16) + '，新开页面执行中...';
+              GM_openInTab('https://task-bgm.smzdm.com/#/task/create?tuopin_task=1', { active: false, insert: true });
+            });
+          });
+        };
+
+        // 复选框变化时更新确认按钮显示
+        // 监听复选框（事件委托）
+        panel.addEventListener('change', function (e) {
+          if (e.target && e.target.classList.contains('co-select-cb')) coUpdateConfirmBtn();
+        });
+        // 确认填入按钮 / 确认视频图按钮
+        panel.addEventListener('click', function (e) {
+          var tid = e.target && e.target.id;
+          if (tid !== 'tuopin-co-confirm-btn' && tid !== 'tuopin-co-confirm-vid-btn') return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (tid === 'tuopin-co-confirm-btn') {
+            var checked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+            if (!checked.length) return alert('请先在图生图区域勾选一张图片');
+            var confirmUrl = checked[0].getAttribute('data-url');
+            GM_setValue('tuopin_co_confirm_url', confirmUrl);
+            GM_setValue('tuopin_co_confirm_aid', CO_ARTICLE_ID);
+            var editHref = 'http://youhui.bgm.smzdm.com/edit_youhui/' + CO_ARTICLE_ID + '?tuopin_co_confirm=1';
+            GM_openInTab(editHref, { active: false, insert: true });
+            coLog('→ 已后台静默打开编辑页进行焦点图替换: ' + confirmUrl.slice(0, 60));
+          } else if (tid === 'tuopin-co-confirm-vid-btn') {
+            var checkedImgs = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+            if (!checkedImgs.length) { alert('请先在图生图区域勾选要合并成视频的图片'); return; }
+            var panel2 = document.getElementById('tuopin-co-panel');
+            var vidBox = document.getElementById('tuopin-co-videos');
+            if (!vidBox) { coLog('✗ 找不到视频容器'); return; }
+            var allCards = Array.from(panel2.querySelectorAll('#tuopin-co-images [data-co-url]'));
+            var selectedUrls = [];
+            checkedImgs.forEach(function (cb) { selectedUrls.push(cb.getAttribute('data-url')); });
+
+            // 读两条视频提示词
+            var vidPrompts = [];
+            for (var vi = 0; vi < 2; vi++) {
+              var vta = document.getElementById('co-prompt-' + vi);
+              if (vta && vta.value.trim()) vidPrompts.push(vta.value.trim());
+            }
+            if (!vidPrompts.length) vidPrompts = ['电影切镜，多镜头合并，动态流畅，不改变商品形态'];
+            if (vidPrompts.length < 2) vidPrompts.push(vidPrompts[0]);
+
+            // 锁定按钮防重复点击
+            var vidBtn = document.getElementById('tuopin-co-confirm-vid-btn');
+            if (vidBtn) { vidBtn.disabled = true; vidBtn.textContent = '⏳ 提交中...'; }
+            coLog('▶ 提交合并视频 (' + selectedUrls.length + ' 张图, ' + VID_MODELS.length + ' 个模型)');
+
+            vidBox.innerHTML = '';
+            var savedVids = [];
+            var vidDoneCount = 0;
+            // 并行提交两条视频，各用一个模型
+            VID_MODELS.forEach(function (vm, vi) {
+              var vc2 = document.createElement('div');
+              vc2.style.cssText = 'border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
+              vc2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">' + vm.name + ' 生成中...</div>';
+              vidBox.appendChild(vc2);
+
+              var vPrompt = vidPrompts[vi % vidPrompts.length];
+              (function(vi, vc2, vm, vPrompt) {
+                coSubmitVideo(vPrompt, selectedUrls, vi,
+                  function (taskId) {
+                    coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
+                    try {
+                      var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                      var pts = cur.pendingTasks || [];
+                      pts = pts.filter(function(p) { return p.idx !== vi; });
+                      pts.push({ idx: vi, taskId: taskId });
+                      cur.pendingTasks = pts;
+                      GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
+                    } catch(e) {}
+                    coPollVideo(taskId,
+                      function (vurl) {
+                        vc2.style.position = 'relative';
+                        vc2.setAttribute('data-co-url', vurl);
+                        vc2.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:3px;display:block;"></video>'
+                          + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + vm.name + ' · ' + selectedUrls.length + '张合并</div>'
+                          + '<div style="display:flex;gap:2px;">'
+                          + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
+                          + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                        coBindCopy(vc2);
+                        savedVids.push(vurl);
+                        vidDoneCount++;
+                        if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                        try {
+                          var cur2 = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                          cur2.pendingTasks = (cur2.pendingTasks || []).filter(function(p) { return p.taskId !== taskId; });
+                          cur2.videos = savedVids.slice();
+                          GM_setValue(CO_SESSION_KEY, JSON.stringify(cur2));
+                        } catch(e) {}
+                        coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 完成');
+                      },
+                      function (err) {
+                        vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' ' + err + '</div>';
+                        vidDoneCount++;
+                        if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                        coLog('✗ 视频' + (vi + 1) + ' ' + err);
+                      }
+                    );
+                  },
+                  function (err) {
+                    vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' 提交失败 ' + err + '</div>';
+                    vidDoneCount++;
+                    if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                    coLog('✗ 视频' + (vi + 1) + ' 提交失败 ' + err);
+                  }
+                );
+              })(vi, vc2, vm, vPrompt);
+            });
+          }
+        });
+
+        // 重新生成单张图片
+        panel.addEventListener('click', function (e) {
+          var btn = e.target && e.target.classList.contains('co-regen-img') ? e.target : null;
+          if (!btn) return;
+          var idx = parseInt(btn.getAttribute('data-idx'), 10);
+          var ta = document.getElementById('co-prompt-' + idx);
+          var prompt = ta ? ta.value.trim() : '';
+          if (!prompt) return;
+          var apiKey = GM_getValue(CO_KEY, '');
+          if (!apiKey) return alert('请先配置 API Key');
+          var imagesBox2 = document.getElementById('tuopin-co-images');
+          var imgCards = imagesBox2 ? imagesBox2.children : [];
+          var ic2 = imgCards[idx];
+          if (!ic2) return;
+          var currentImg = coGetArticleImage();
+          ic2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">图' + (idx + 1) + ' 重新生成中...</div>';
+          coLog('↺ 重新生成图' + (idx + 1));
+          coCreateImg(prompt, currentImg, idx,
+            function (url) {
+              coImgMeta[idx] = { prompt: prompt, url: url };
+              ic2.setAttribute('data-co-url', url);
+              ic2.innerHTML = '<label style="position:absolute;top:6px;left:6px;z-index:2;cursor:pointer;">'
+                + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:4px;display:block;">'
+                + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">模型: ' + (IMG_MODEL_NAMES[Math.floor(idx / 3) % IMG_MODEL_NAMES.length]) + '</div>'
+                + '<div style="display:flex;gap:3px;">'
+                + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
+                + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+              coBindCopy(ic2);
+              coUpdateConfirmBtn();
+              coLog('✓ 图' + (idx + 1) + ' 重新生成完成');
+            },
+            function (err) {
+              ic2.innerHTML = '<div class="co-gen" style="color:#ff4d4f;text-align:center;padding:8px 0;">✗ ' + err + '</div>';
+              coLog('✗ 图' + (idx + 1) + ' 重新生成失败: ' + err);
+            }
+          );
+        });
+
+        // 用（已编辑的）某条视频提示词重新生成对应那条视频
+        panel.addEventListener('click', function (e) {
+          var btn = e.target && e.target.classList.contains('co-regen-vid') ? e.target : null;
+          if (!btn) return;
+          var idx = parseInt(btn.getAttribute('data-idx'), 10);
+          if (isNaN(idx)) return;
+          var ta = document.getElementById('co-prompt-' + idx);
+          var prompt = ta ? ta.value.trim() : '';
+          if (!prompt) { alert('该视频提示词为空'); return; }
+          var apiKey = GM_getValue(CO_KEY, '');
+          if (!apiKey) return alert('请先配置 API Key');
+          var vidBox2 = document.getElementById('tuopin-co-videos');
+          if (!vidBox2) return;
+          var checked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+          if (!checked.length) { alert('请先在图生图区域勾选要合并的图片'); return; }
+          var selectedUrls = [];
+          checked.forEach(function (cb) { selectedUrls.push(cb.getAttribute('data-url')); });
+
+          var vm = VID_MODELS[idx % VID_MODELS.length];
+          // 定位/创建对应视频卡片（按 idx 顺序匹配已有卡片，没有则新建）
+          var cards = vidBox2.children;
+          var vc3 = cards[idx];
+          if (!vc3) {
+            vc3 = document.createElement('div');
+            vc3.style.cssText = 'border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
+            vidBox2.appendChild(vc3);
+          }
+          vc3.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">' + vm.name + ' 重新生成中...</div>';
+          btn.disabled = true;
+          coLog('↺ 重新生成视频' + (idx + 1) + '(' + vm.name + ') 用提示词: ' + prompt.slice(0, 30));
+          coSubmitVideo(prompt, selectedUrls, idx,
+            function (taskId) {
+              coLog('✓ 视频' + (idx + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
+              try {
+                var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                var pts = cur.pendingTasks || [];
+                pts = pts.filter(function(p) { return p.idx !== idx; });
+                pts.push({ idx: idx, taskId: taskId });
+                cur.pendingTasks = pts;
+                GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
+              } catch(e) {}
+              coPollVideo(taskId,
+                function (vurl) {
+                  btn.disabled = false;
+                  vc3.style.position = 'relative';
+                  vc3.setAttribute('data-co-url', vurl);
+                  vc3.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:3px;display:block;"></video>'
+                    + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + vm.name + ' · ' + selectedUrls.length + '张合并</div>'
+                    + '<div style="display:flex;gap:2px;">'
+                    + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
+                    + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                  coBindCopy(vc3);
+                  try {
+                    var cur2 = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                    cur2.pendingTasks = (cur2.pendingTasks || []).filter(function(p) { return p.taskId !== taskId; });
+                    if (!cur2.videos) cur2.videos = [];
+                    if (cur2.videos.indexOf(vurl) < 0) cur2.videos.push(vurl);
+                    GM_setValue(CO_SESSION_KEY, JSON.stringify(cur2));
+                  } catch(e) {}
+                  coLog('✓ 视频' + (idx + 1) + '(' + vm.name + ') 重新生成完成');
+                },
+                function (err) {
+                  btn.disabled = false;
+                  vc3.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' ' + err + '</div>';
+                  coLog('✗ 视频' + (idx + 1) + ' 重新生成失败: ' + err);
+                }
+              );
+            },
+            function (err) {
+              btn.disabled = false;
+              vc3.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' 提交失败 ' + err + '</div>';
+              coLog('✗ 视频' + (idx + 1) + ' 提交失败 ' + err);
+            }
+          );
+        });
+
+        (function restoreSession() {
+          var sess = coLoadSession();
+          if (!sess.ts || (Date.now() - sess.ts) > 3 * 3600e3) return;
+          var scene = sess.scene; var prompts = sess.prompts || []; var imgs = sess.images || []; var vids = sess.videos || [];
+          var pending = sess.pendingTasks || [];
+          var pendingImgsRestore = sess.pendingImgs || [];
+          document.getElementById('tuopin-co-scene').value = scene;
+          // 提示词
+          var pp = document.getElementById('tuopin-co-prompts');
+          if (prompts.length) {
+              var ph = '<div style="color:#999;font-size:10px;margin-bottom:4px;">视频提示词（上次生成）</div>';
+            prompts.forEach(function (p, i) {
+              ph += '<div style="display:flex;align-items:flex-start;gap:4px;margin-bottom:4px;">'
+                + '<span style="color:#ff7a00;font-size:11px;font-weight:600;line-height:28px;flex-shrink:0;">' + (i + 1) + '.</span>'
+                + '<textarea id="co-prompt-' + i + '" rows="2" style="flex:1;min-width:0;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;line-height:1.4;resize:vertical;box-sizing:border-box;color:#333;">' + coEsc(p) + '</textarea>'
+                + '<button class="co-regen-vid" data-idx="' + i + '" title="用此提示词重新生成视频(' + (VID_MODELS[i % VID_MODELS.length] ? VID_MODELS[i % VID_MODELS.length].name : '') + ')" style="flex-shrink:0;width:22px;height:22px;margin-top:3px;background:#fff7e6;border:1px solid #ffd591;border-radius:50%;cursor:pointer;font-size:12px;line-height:1;padding:0;">▶</button>'
+                + '</div>';
+            });
+            pp.innerHTML = ph;
+          }
+          // 图片/视频
+          if (imgs.length) coFillCards(document.getElementById('tuopin-co-images'), imgs);
+          if (vids.length) coFillCards(document.getElementById('tuopin-co-videos'), vids);
+          // 恢复进行中的图片任务（刷新后重新发起生成）
+          if (pendingImgsRestore.length) {
+            var imagesBoxR = document.getElementById('tuopin-co-images');
+            var resumeImgsArr = imgs.slice();
+            var resumePendingImgs = pendingImgsRestore.slice();
+            var resumeDone = 0;
+            coSetStatus('已恢复上次结果，继续生成 ' + pendingImgsRestore.length + ' 张图片...');
+            pendingImgsRestore.forEach(function (t) {
+              // 补充图片卡片占位（已完成的 idx 已有卡片，未完成的补占位）
+              var existCards = imagesBoxR.children.length;
+              while (imagesBoxR.children.length <= t.idx) {
+                var placeholder = document.createElement('div');
+                placeholder.style.cssText = 'position:relative;border:1px solid #eee;border-radius:6px;padding:3px;font-size:10px;';
+                placeholder.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">图' + (imagesBoxR.children.length + 1) + ' 生成中...</div>';
+                imagesBoxR.appendChild(placeholder);
+              }
+              var ic3 = imagesBoxR.children[t.idx];
+              if (ic3) ic3.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">图' + (t.idx + 1) + ' 生成中...</div>';
+              coCreateImg(t.prompt, t.imgSrc, t.modelIdx,
+                function (url) {
+                  resumeDone++;
+                  resumePendingImgs = resumePendingImgs.filter(function(x) { return x.idx !== t.idx; });
+                  resumeImgsArr[t.idx] = url;
+                  if (ic3) {
+                    ic3.setAttribute('data-co-url', url);
+                    ic3.innerHTML = '<label style="position:absolute;top:4px;left:4px;z-index:2;cursor:pointer;">'
+                      + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                      + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
+                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[t.modelIdx % IMG_MODEL_NAMES.length] + '</div>'
+                      + '<div style="display:flex;gap:2px;">'
+                      + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
+                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                    coBindCopy(ic3);
+                  }
+                  coImgMeta[t.idx] = { prompt: t.prompt, url: url };
+                  coUpdateConfirmBtn();
+                  coSaveSession(scene, prompts, resumeImgsArr.filter(Boolean), vids, pending, resumePendingImgs);
+                  if (resumePendingImgs.length === 0) coSetStatus('② 图片全部生成完成，勾选后点击确认视频图');
+                  coLog('✓ 恢复图' + (t.idx + 1) + ' 完成');
+                },
+                function (err) {
+                  resumeDone++;
+                  resumePendingImgs = resumePendingImgs.filter(function(x) { return x.idx !== t.idx; });
+                  if (ic3) { ic3.innerHTML = '<div class="co-gen" style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + err + '</div>'; }
+                  coSaveSession(scene, prompts, resumeImgsArr.filter(Boolean), vids, pending, resumePendingImgs);
+                  coLog('✗ 恢复图' + (t.idx + 1) + ' 失败: ' + err);
+                }
+              );
+            });
+          }
+          // 恢复进行中的视频任务（页面刷新后继续轮询）
+          if (pending.length && prompts.length) {
+            var imagesBox2 = document.getElementById('tuopin-co-images');
+            var videosBox2 = document.getElementById('tuopin-co-videos');
+            var resumeImgs = imgs.slice();
+            var resumeVids = vids.slice();
+            coSetStatus('已恢复上次结果，继续轮询 ' + pending.length + ' 个视频...');
+            pending.forEach(function (t) {
+              var idx = t.idx;
+              var taskId = t.taskId;
+              // 在视频区插入/更新对应卡片为"轮询中"状态
+              var vcards = videosBox2.children;
+              var vc = vcards[idx];
+              if (!vc) {
+                vc = document.createElement('div');
+                vc.style.cssText = 'border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
+                videosBox2.appendChild(vc);
+              }
+              vc.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">视频' + (idx + 1) + ' 轮询中...</div>';
+              coPollVideo(taskId,
+                function (vurl) {
+                  vc.innerHTML = '<video src="' + vurl + '" controls style="width:100%;border-radius:4px;margin-bottom:4px;display:block;"></video>'
+                    + '<div style="display:flex;gap:3px;">'
+                    + '<button class="co-copy" data-url="' + vurl + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
+                    + '<a href="' + vurl + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>';
+                  coBindCopy(vc);
+                  resumeVids.push(vurl);
+                  // 从 pending 移除该 task 并持久化
+                  var newPending = [];
+                  try {
+                    var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                    newPending = (cur.pendingTasks || []).filter(function(pt) { return pt.taskId !== taskId; });
+                  } catch(e) {}
+                  coSaveSession(scene, prompts, resumeImgs, resumeVids, newPending);
+                  if (newPending.length === 0) {
+                    coSetStatus('✓ 全部视频生成完成');
+                    coSaveHistory(scene, prompts, resumeImgs, resumeVids);
+                    coRenderHistory();
+                  }
+                  coLog('✓ 视频' + (idx + 1) + ' 恢复完成');
+                },
+                function (err) {
+                  if (vc.querySelector('.co-gen')) {
+                    vc.querySelector('.co-gen').textContent = '✗ ' + err;
+                    vc.querySelector('.co-gen').style.color = '#ff4d4f';
+                  }
+                  coLog('✗ 视频' + (idx + 1) + ' 恢复轮询失败: ' + err);
+                }
+              );
+            });
+          } else {
+            coSetStatus('已恢复上次结果');
+          }
+        })();
+        // 渲染历史
+        coRenderHistory();
+
+        var keyInput = document.getElementById('tuopin-co-key');
+        keyInput.value = GM_getValue(CO_KEY, '');
+        document.getElementById('tuopin-co-cog').onclick = function () {
+          var s = document.getElementById('tuopin-co-settings');
+          s.style.display = s.style.display === 'none' ? 'block' : 'none';
+        };
+        document.getElementById('tuopin-co-savekey').onclick = function () {
+          GM_setValue(CO_KEY, keyInput.value.trim());
+          document.getElementById('tuopin-co-settings').style.display = 'none';   // 保存后收起
+          coLog('✓ Key 已保存');
+        };
+
+        document.getElementById('tuopin-co-go').onclick = function () {
+          var closeup = document.getElementById('tuopin-co-closeup').value.trim();
+          var scene = document.getElementById('tuopin-co-scene').value.trim();
+          if (!closeup && !scene) return alert('请输入特写词或场景词');
+          var apiKey = GM_getValue(CO_KEY, '');
+          if (!apiKey) { alert('请先点右上 ⚙ Key 配置 gw-openapi 的 Bearer Key'); return; }
+
+          var img = coGetArticleImage();
+          var title = coGetArticleTitle();
+          var promptsBox = document.getElementById('tuopin-co-prompts');
+          var imagesBox = document.getElementById('tuopin-co-images');
+          var videosBox = document.getElementById('tuopin-co-videos');
+          promptsBox.innerHTML = ''; imagesBox.innerHTML = ''; videosBox.innerHTML = '';
+          coSetStatus('① 生成场景提示词中...');
+          var logLabel = (closeup ? '特写:' + closeup : '') + (closeup && scene ? ' + ' : '') + (scene ? '场景:' + scene : '');
+          coLog(logLabel + (title ? ' | 商品: ' + title.slice(0, 40) : ''));
+
+          var coRetried = false;
+          function coHandlePrompts(full) {
+              var prompts = coParsePrompts(full);
+              if (prompts.length < 2 && !coRetried) {
+                coRetried = true;
+                coLog('仅获得 ' + prompts.length + ' 条提示词，重试一次...');
+                coSetStatus('① 提示词不足2条，重试中...');
+                coLlmChat(closeup, scene, title, img, coHandlePrompts, function(e) {
+                  coSetStatus('✗ 重试失败: ' + e);
+                });
+                return;
+              }
+              if (!prompts.length) {
+                coSetStatus('✗ 未解析到提示词');
+                coLog('原始输出: ' + (full || '').slice(0, 300));
+                return;
+              }
+              // 展示视频提示词（可编辑，不用于图片）
+              var ph = '<div style="color:#999;font-size:10px;margin-bottom:4px;">视频提示词</div>';
+              prompts.forEach(function (p, i) {
+                ph += '<div style="display:flex;align-items:flex-start;gap:4px;margin-bottom:4px;">'
+                  + '<span style="color:#ff7a00;font-size:11px;font-weight:600;line-height:28px;flex-shrink:0;">' + (i + 1) + '.</span>'
+                  + '<textarea id="co-prompt-' + i + '" rows="2" style="flex:1;min-width:0;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;line-height:1.4;resize:vertical;box-sizing:border-box;color:#333;">' + coEsc(p) + '</textarea>'
+                  + '<button class="co-regen-vid" data-idx="' + i + '" title="用此提示词重新生成视频(' + (VID_MODELS[i % VID_MODELS.length] ? VID_MODELS[i % VID_MODELS.length].name : '') + ')" style="flex-shrink:0;width:22px;height:22px;margin-top:3px;background:#fff7e6;border:1px solid #ffd591;border-radius:50%;cursor:pointer;font-size:12px;line-height:1;padding:0;">▶</button>'
+                  + '</div>';
+              });
+              promptsBox.innerHTML = ph;
+              coSetStatus('② 图生图中...');
+              coLog('✓ 视频提示词 ' + prompts.length + ' 条');
+
+              // 构建图片提示词（基于特写词+场景词，与视频提示词无关）
+              var imgBaseCore = (closeup && scene) ? closeup + '，' + scene
+                : (closeup || scene);
+              var IMG_CONSTRAINT = '，画面中只出现这一张商品图片，严禁多格拼图、严禁分镜、严禁并排多张、输出单张完整画面，不要拼接图片，单张构图，不改变商品形态';
+
+              var imgDone = 0, total = 6;
+              var gotImgs = new Array(total);
+              var pendingTasks = [];
+              var pendingImgs = []; // [{idx, prompt, imgSrc, modelIdx}]
+              coImgMeta = new Array(total);
+              function persist() {
+                coSaveSession(scene, prompts, gotImgs.filter(Boolean), [], pendingTasks, pendingImgs);
+              }
+              function removePendingImg(idx) {
+                pendingImgs = pendingImgs.filter(function(t) { return t.idx !== idx; });
+              }
+              persist();
+              function checkAll() {
+                if (imgDone === total) {
+                  coSetStatus('② 图片生成完成，勾选后点击确认视频图');
+                  coSaveSession(scene, prompts, gotImgs.filter(Boolean), []);
+                }
+              }
+
+              for (var i = 0; i < total; i++) {
+                (function(i) {
+                var imgBasePrompt = imgBaseCore + '，' + IMG_ANGLES[i % IMG_ANGLES.length] + IMG_CONSTRAINT;
+                var ic = document.createElement('div');
+                ic.style.cssText = 'position:relative;border:1px solid #eee;border-radius:6px;padding:3px;font-size:10px;';
+                ic.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">图' + (i + 1) + ' 生成中...</div>';
+                imagesBox.appendChild(ic);
+                // 记录进行中任务，刷新后可恢复
+                pendingImgs.push({ idx: i, prompt: imgBasePrompt, imgSrc: img, modelIdx: i });
+                persist();
+                coCreateImg(imgBasePrompt, img, i,
+                  function (url) {
+                    gotImgs[i] = url;
+                    removePendingImg(i);
+                    ic.setAttribute('data-co-url', url);
+                    ic.innerHTML = '<label style="position:absolute;top:4px;left:4px;z-index:2;cursor:pointer;">'
+                      + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                      + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
+                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[Math.floor(i / 3) % IMG_MODEL_NAMES.length] + '</div>'
+                      + '<div style="display:flex;gap:2px;">'
+                      + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
+                      + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                    coBindCopy(ic);
+                    imgDone++; persist(); checkAll();
+                    coLog('✓ 图' + (i + 1) + ' 完成');
+                    coImgMeta[i] = { prompt: imgBasePrompt, url: url };
+                    coUpdateConfirmBtn();
+                  },
+                  function (err) {
+                    removePendingImg(i);
+                    ic.querySelector('.co-gen').textContent = '✗ ' + err;
+                    ic.querySelector('.co-gen').style.color = '#ff4d4f';
+                    coLog('✗ 图' + (i + 1) + ' ' + err);
+                    imgDone++; persist(); checkAll();
+                  }
+                );
+                })(i);
+              }
+          }
+          coLlmChat(closeup, scene, title, img, coHandlePrompts,
+            function (err) {
+              coSetStatus('✗ ' + err);
+              coLog('✗ ' + err);
+            }
+          );
+        };
+      }
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', build);
+      } else { build(); }
+    })();
+    return;
+  }
+  // ===== END 内容优化 =====
+
+  // ===== 任务中台 task-bgm.smzdm.com 自动填表 =====
+  if (location.hostname === 'task-bgm.smzdm.com') {
+    var taskParamRaw = (location.hash + location.search).indexOf('tuopin_task=1') >= 0
+      ? GM_getValue('tuopin_pending_task', '') : '';
+    if (taskParamRaw) {
+      GM_setValue('tuopin_pending_task', '');
+      var tp;
+      try { tp = JSON.parse(taskParamRaw); } catch(e) { tp = null; }
+      if (tp) {
+        function taskLog(msg) { console.log('[任务中台] ' + msg); }
+        function waitTaskVue(cb) {
+          var tried = 0;
+          function check() {
+            var rootEl = document.querySelector('.create-box');
+            if (rootEl && rootEl.__vue__) { cb(rootEl.__vue__); return; }
+            tried++;
+            if (tried < 60) { setTimeout(check, 200); }
+            else { taskLog('Vue 未加载，放弃'); }
+          }
+          if (document.readyState === 'complete') { setTimeout(check, 500); }
+          else { window.addEventListener('load', function() { setTimeout(check, 500); }, { once: true }); }
+        }
+        waitTaskVue(function(vue) {
+          taskLog('Vue 已就绪，开始填表...');
+          var P = tp;
+          // 去掉标题里的价格/到手价等前缀杂质，只保留商品名
+          var rawTitle = P.articleTitle || '';
+          var productName = rawTitle.replace(/.*到手价[\d.]*元[，,]?/, '')
+            .replace(/淘金币到手价[\d.]+元[，,]?/, '')
+            .replace(/折[\d.]+元\/件[，,]?/, '')
+            .replace(/^[\s,，]+/, '').trim() || rawTitle;
+          // 描述组装：商品名 + 到手价只需xx元 + 动作（最多42字）
+          var pricePart = P.price ? ('，到手价' + P.price + '元') : '';
+          var actionPart = '，点赞收藏获得抽奖';
+          var maxNameLen = 42 - pricePart.length - actionPart.length;
+          if (productName.length > maxNameLen && maxNameLen > 0) productName = productName.slice(0, maxNameLen);
+          var description = productName + pricePart + actionPart;
+
+          vue.$set(vue.createData, 'activity_ids', P.activityId);
+          vue.$set(vue.createData, 'task_name', P.taskName);
+          vue.$set(vue.createData, 'event_type', 'interactive.rating');
+          vue.$set(vue.createData, 'reward_gift_id', P.rewardId);
+          vue.$set(vue.createData, 'medal_code', '');
+          vue.$set(vue.createData, 'description', description);
+          vue.$set(vue.createData, 'start_time', P.startTime);
+          vue.$set(vue.createData, 'end_time', P.endTime);
+          vue.$set(vue.createData, 'redirect_url', P.articleUrl);
+          vue.$set(vue.createData, 'save_type', 0);
+          vue.$set(vue.createData, 'event_conds_data', JSON.stringify({
+            article_id: P.articleId,
+            isDirect: vue.isDirectObj ? vue.isDirectObj.point : 1,
+            activity_ids: P.activityId
+          }));
+
+          // 填活动ID输入框并触发校验
+          var actInput = document.querySelector('input[placeholder*="多个活动id"]') || document.querySelector('input[placeholder*="活动id"]');
+          if (actInput) {
+            actInput.value = P.activityId;
+            actInput.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          setTimeout(function() {
+            var verifyBtns = Array.from(document.querySelectorAll('button')).filter(function(b) { return b.textContent.indexOf('校验') >= 0; });
+            if (verifyBtns[2]) verifyBtns[2].click();
+            setTimeout(function() {
+              var publishBtn = Array.from(document.querySelectorAll('button')).find(function(b) { return b.textContent.trim() === '发布'; });
+              if (publishBtn) { publishBtn.click(); taskLog('✓ 已点击发布'); }
+              else { taskLog('⚠ 未找到发布按钮，请手动发布'); }
+            }, 1200);
+          }, 1000);
+        });
+      }
+    }
+    return;
+  }
+  // ===== END 任务中台 =====
 
   var K = 'tuopin_selected_ids';
   var F = '__tuopin_inited__';
@@ -4383,7 +6460,13 @@
       GM_setValue('tuopin_publish_index', 0);
       GM_setValue('tuopin_publish_results', '[]');
       GM_setValue('tuopin_summary_closed', '');
-      window.open('http://youhui.bgm.smzdm.com/add_guonei', '_blank');
+      // 新开标签页跑流程：生成带序号的 runId 引导锁并带进 URL，让新标签成为流程归属者。
+      // 大淘客本页不执行队列，故不写自身 session、不启心跳（避免长期占锁误拦后续手动操作）。
+      var seq = (parseInt(GM_getValue(TUOPIN_FLOW_SEQ_KEY, '0'), 10) || 0) + 1;
+      GM_setValue(TUOPIN_FLOW_SEQ_KEY, String(seq));
+      var runId = 's' + seq + 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+      tuopinWriteLock(runId);
+      GM_openInTab('http://youhui.bgm.smzdm.com/add_guonei?tuopin_run=' + encodeURIComponent(runId), { active: false, insert: true });
     };
 
     uc();
