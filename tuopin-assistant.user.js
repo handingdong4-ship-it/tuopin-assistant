@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.6.8
+// @version      3.7.1
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2174,15 +2174,26 @@
                     clearInterval(itv); coLog2('✓ 保存成功'); return;
                   }
                   if (tries++ > 15) { clearInterval(itv); coLog2('⚠ 保存超时'); return; }
-                  // 用公共 dismissPopup 处理弹窗（boxy/layui/el-dialog）
-                  var dpResult = dismissPopup();
-                  if (!dpResult) {
-                    var jc = document.querySelector('a.J_GlobalConfirm');
-                    if (jc && jc.offsetParent !== null) { jc.click(); dpResult = 'J_GlobalConfirm'; }
+                  // 精准弹窗处理（不用 dismissPopup 避免误点正常页面按钮）
+                  var dpResult = null;
+                  var b3s = document.querySelectorAll('.boxy-btn3');
+                  for (var b3i = 0; b3i < b3s.length; b3i++) {
+                    if (b3s[b3i].offsetParent !== null) {
+                      if ((b3s[b3i].getAttribute('value') || '').indexOf('忽略') >= 0) { b3s[b3i].click(); dpResult = '忽略'; break; }
+                    }
                   }
+                  if (!dpResult) { for (var b3j = 0; b3j < b3s.length; b3j++) { if (b3s[b3j].offsetParent !== null) { b3s[b3j].click(); dpResult = 'btn3'; break; } } }
+                  if (!dpResult) { var b1 = document.querySelector('.boxy-btn1'); if (b1 && b1.offsetParent !== null) { b1.click(); dpResult = 'btn1'; } }
+                  if (!dpResult) { var layer0 = document.querySelector('.layui-layer-btn0'); if (layer0 && layer0.offsetParent !== null) { layer0.click(); dpResult = 'layui'; } }
+                  if (!dpResult) { var jc = document.querySelector('a.J_GlobalConfirm'); if (jc && jc.offsetParent !== null) { jc.click(); dpResult = 'J_GlobalConfirm'; } }
+                  if (!dpResult) { var blk = document.querySelector('.boxy-modal-blackout'); if (blk && blk.offsetParent !== null) { blk.click(); dpResult = 'blackout'; } }
                   if (!dpResult) {
-                    var blk = document.querySelector('.boxy-modal-blackout');
-                    if (blk && blk.offsetParent !== null) { blk.click(); dpResult = 'blackout'; }
+                    var elDlgs = document.querySelectorAll('.el-dialog__wrapper, .el-message-box__wrapper');
+                    for (var ed = 0; ed < elDlgs.length; ed++) {
+                      if (elDlgs[ed].style.display === 'none' || elDlgs[ed].style.visibility === 'hidden') continue;
+                      var prim = elDlgs[ed].querySelector('.el-button--primary');
+                      if (prim && prim.offsetParent !== null) { prim.click(); dpResult = 'el-confirm'; break; }
+                    }
                   }
                   if (dpResult) { coLog2('✓ 处理弹窗: ' + dpResult); return; }
                   // 没有弹窗，点"保存修改"
@@ -4100,11 +4111,24 @@
           + '<div id="tuopin-task-done-today" style="max-height:260px;overflow-y:auto;font-size:10px;color:#666;"></div>'
           + '</div>'
           + '<div style="margin-top:10px;border-top:1px dashed #ffcc80;padding-top:6px;">'
-          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:4px;">任务权限名单</div>'
-          + '<div style="font-size:10px;color:#999;margin-bottom:4px;">可查看任务 tab 的用户名，每行一个</div>'
-          + '<textarea id="tuopin-task-whitelist" rows="4" placeholder="每行一个用户名" style="width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;"></textarea>'
-          + '<button id="tuopin-task-whitelist-save" style="width:100%;margin-top:4px;padding:5px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">保存名单</button>'
-          + '<div id="tuopin-task-whitelist-log" style="font-size:10px;color:#52c41a;margin-top:3px;"></div>'
+          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:6px;">任务权限名单</div>'
+          + '<div style="font-size:10px;color:#999;margin-bottom:4px;">当前名单：</div>'
+          + '<div id="tuopin-task-whitelist-display" style="background:#f5f5f5;border:1px solid #eee;border-radius:4px;padding:4px 6px;font-size:10px;color:#555;min-height:24px;margin-bottom:8px;line-height:1.8;"></div>'
+          + '<div style="margin-bottom:6px;">'
+          + '<div style="font-size:10px;color:#1890ff;font-weight:600;margin-bottom:4px;">增加权限</div>'
+          + '<div style="display:flex;gap:4px;">'
+          + '<input id="tuopin-task-wl-add-input" type="text" placeholder="输入用户名" style="flex:1;min-width:0;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '<button id="tuopin-task-wl-add-btn" style="padding:3px 8px;background:#1890ff;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;flex-shrink:0;">添加</button>'
+          + '</div>'
+          + '</div>'
+          + '<div>'
+          + '<div style="font-size:10px;color:#ff4d4f;font-weight:600;margin-bottom:4px;">删除权限</div>'
+          + '<div style="display:flex;gap:4px;">'
+          + '<select id="tuopin-task-wl-del-sel" style="flex:1;min-width:0;padding:3px 4px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;"></select>'
+          + '<button id="tuopin-task-wl-del-btn" style="padding:3px 8px;background:#ff4d4f;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;flex-shrink:0;">删除</button>'
+          + '</div>'
+          + '</div>'
+          + '<div id="tuopin-task-whitelist-log" style="font-size:10px;color:#52c41a;margin-top:5px;"></div>'
           + '</div></div>'
           + '</div>';
         panel.innerHTML = h;
@@ -4125,13 +4149,24 @@
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
-                // 初始化权限名单 textarea
-                var wlTA = document.getElementById('tuopin-task-whitelist');
-                if (wlTA) {
-                  var wlList = [];
-                  try { wlList = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
-                  wlTA.value = wlList.join('\n');
-                }
+                // 从 relay 拉最新权限名单并初始化展示
+                GM_xmlhttpRequest({
+                  method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
+                  onload: function(wr) {
+                    try {
+                      var wd = JSON.parse(wr.responseText || '{}');
+                      var wlList = wd.whitelist || [];
+                      GM_setValue('tuopin_task_whitelist', JSON.stringify(wlList));
+                      coWlRefresh(wlList);
+                    } catch(e) {}
+                  },
+                  onerror: function() {
+                    // fallback 本地
+                    var wlList = [];
+                    try { wlList = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+                    coWlRefresh(wlList);
+                  }
+                });
                 // 管理员确认身份后：若 relay 今天还没有时段数据，自动把本地模式推送上去
                 coSlotsGet(function(chk) {
                   if (chk.ok && !(chk.slots || []).length) {
@@ -4358,6 +4393,7 @@
           });
           var html = '<div style="color:#bbb;font-size:9px;margin-bottom:3px;">仅展开活动ID：' + curActId + ' 的明细</div>';
           if (!items.length) { html += '<div style="color:#bbb;text-align:center;padding:6px;">今日暂无配置记录</div>'; box.innerHTML = html; return; }
+          items.reverse();
           var LIMIT = 5;
           var show = coTaskDoneExpanded ? items : items.slice(0, LIMIT);
           html += show.join('');
@@ -4586,15 +4622,19 @@
           });
         };
 
-        // 权限名单 保存按钮
-        var wlSaveBtn = document.getElementById('tuopin-task-whitelist-save');
-        if (wlSaveBtn) wlSaveBtn.onclick = function() {
-          var raw = (document.getElementById('tuopin-task-whitelist').value || '').trim();
-          var names = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
-          GM_setValue('tuopin_task_whitelist', JSON.stringify(names));
+        // 权限名单：刷新展示区和下拉
+        function coWlRefresh(names) {
+          var display = document.getElementById('tuopin-task-whitelist-display');
+          if (display) display.innerHTML = names.length ? names.map(function(n){ return '<span style="display:inline-block;background:#e6f7ff;border:1px solid #91d5ff;border-radius:3px;padding:0 5px;margin:1px 2px;">'+n+'</span>'; }).join('') : '<span style="color:#bbb;">暂无</span>';
+          var sel = document.getElementById('tuopin-task-wl-del-sel');
+          if (sel) { sel.innerHTML = names.map(function(n){ return '<option value="'+n+'">'+n+'</option>'; }).join(''); }
+        }
+
+        // 推送名单到 relay
+        function coWlSave(names, cb) {
           var logEl = document.getElementById('tuopin-task-whitelist-log');
-          if (logEl) logEl.textContent = '⏳ 保存中...';
-          // 同步推送到 relay 服务端
+          if (logEl) logEl.textContent = '⏳ 同步中...';
+          GM_setValue('tuopin_task_whitelist', JSON.stringify(names));
           GM_xmlhttpRequest({
             method: 'POST', url: RELAY + '/task/whitelist',
             headers: { 'Content-Type': 'application/json' },
@@ -4603,11 +4643,42 @@
             onload: function(r) {
               try {
                 var res = JSON.parse(r.responseText || '{}');
-                if (logEl) logEl.textContent = res.ok ? ('✓ 已同步到服务端，共 ' + names.length + ' 个用户') : ('✗ 服务端保存失败：' + (res.error || ''));
+                if (logEl) logEl.style.color = res.ok ? '#52c41a' : '#ff4d4f';
+                if (logEl) logEl.textContent = res.ok ? ('✓ 已同步，共 ' + names.length + ' 个用户') : ('✗ ' + (res.error || '失败'));
+                if (res.ok && cb) cb(names);
               } catch(e) { if (logEl) logEl.textContent = '✗ 解析失败'; }
             },
-            onerror: function() { if (logEl) logEl.textContent = '✗ 网络错误，仅保存本地'; }
+            onerror: function() { if (logEl) { logEl.style.color='#ff4d4f'; logEl.textContent = '✗ 网络错误'; } }
           });
+        }
+
+        // 增加权限按钮
+        var wlAddBtn = document.getElementById('tuopin-task-wl-add-btn');
+        if (wlAddBtn) wlAddBtn.onclick = function() {
+          var inp = document.getElementById('tuopin-task-wl-add-input');
+          var name = (inp ? inp.value : '').trim();
+          if (!name) return;
+          var names = [];
+          try { names = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+          if (names.indexOf(name) >= 0) {
+            var logEl = document.getElementById('tuopin-task-whitelist-log');
+            if (logEl) { logEl.style.color = '#faad14'; logEl.textContent = '⚠ ' + name + ' 已在名单中'; }
+            return;
+          }
+          names.push(name);
+          coWlSave(names, function(updated) { coWlRefresh(updated); if (inp) inp.value = ''; });
+        };
+
+        // 删除权限按钮
+        var wlDelBtn = document.getElementById('tuopin-task-wl-del-btn');
+        if (wlDelBtn) wlDelBtn.onclick = function() {
+          var sel = document.getElementById('tuopin-task-wl-del-sel');
+          var name = sel ? sel.value : '';
+          if (!name) return;
+          var names = [];
+          try { names = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+          names = names.filter(function(n){ return n !== name; });
+          coWlSave(names, function(updated) { coWlRefresh(updated); });
         };
 
         // 任务 发布按钮
