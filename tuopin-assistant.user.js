@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.7.1
+// @version      3.7.2
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -6560,7 +6560,12 @@
     if (document.getElementById('tuopin-toolbar')) return;
     var t = document.createElement('div');
     t.id = 'tuopin-toolbar';
-    t.innerHTML = '<div style="font-size:14px;font-weight:600;color:#333;border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:8px;">拓品助手 <span id="tuopin-count" style="color:#ff4757;">(0)</span></div>' +
+    var tbCollapsed = GM_getValue('tuopin_tb_collapsed', '') === '1';
+    t.innerHTML = '<div style="font-size:14px;font-weight:600;color:#333;border-bottom:' + (tbCollapsed ? 'none' : '1px solid #eee') + ';padding-bottom:' + (tbCollapsed ? '0' : '8px') + ';margin-bottom:' + (tbCollapsed ? '0' : '8px') + ';display:flex;align-items:center;justify-content:space-between;cursor:pointer;" id="tb-header">' +
+      '<span>拓品助手 <span id="tuopin-count" style="color:#ff4757;">(0)</span></span>' +
+      '<span id="tb-toggle" style="font-size:11px;color:#999;margin-left:6px;">' + (tbCollapsed ? '▶' : '▼') + '</span>' +
+      '</div>' +
+      '<div id="tb-body" style="display:' + (tbCollapsed ? 'none' : 'block') + ';">' +
       '<button id="tb-all" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ddd;border-radius:4px;background:#f8f9fa;font-size:13px;cursor:pointer;text-align:left;">全选</button>' +
       '<button id="tb-none" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ddd;border-radius:4px;background:#f8f9fa;font-size:13px;cursor:pointer;text-align:left;">取消全选</button>' +
       '<button id="tb-get" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ff4757;border-radius:4px;background:#ff4757;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">获取选中商品</button>' +
@@ -6586,9 +6591,24 @@
             '<option value="yes">是</option>' +
           '</select>' +
         '</div>' +
+      '</div>' +
       '</div>';
     t.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;width:170px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
     document.body.appendChild(t);
+
+    // 折叠/展开
+    document.getElementById('tb-header').onclick = function() {
+      var body = document.getElementById('tb-body');
+      var toggle = document.getElementById('tb-toggle');
+      var header = document.getElementById('tb-header');
+      var nowCollapsed = body.style.display === 'none';
+      body.style.display = nowCollapsed ? 'block' : 'none';
+      toggle.textContent = nowCollapsed ? '▼' : '▶';
+      header.style.borderBottom = nowCollapsed ? '1px solid #eee' : 'none';
+      header.style.paddingBottom = nowCollapsed ? '8px' : '0';
+      header.style.marginBottom = nowCollapsed ? '8px' : '0';
+      GM_setValue('tuopin_tb_collapsed', nowCollapsed ? '' : '1');
+    };
 
     // 邮箱管理逻辑（GM_setValue 绑定本机）
     function loadEmails() {
