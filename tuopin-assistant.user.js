@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.6.5
+// @version      3.6.7
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4003,7 +4003,7 @@
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
           + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
           + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
-          + '<button id="co-tab-btn-task" style="' + tabStyle('task') + '">任务</button>'
+          + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
           + '</div>'
           + '<div id="co-tab-optimize" style="display:' + (coActiveTab==='optimize' ? 'block' : 'none') + ';">'
           + '<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">'
@@ -4098,21 +4098,38 @@
           + '<div style="margin-top:10px;border-top:1px dashed #ffcc80;padding-top:6px;">'
           + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:4px;">今日各时段配置情况（全同事）</div>'
           + '<div id="tuopin-task-done-today" style="max-height:260px;overflow-y:auto;font-size:10px;color:#666;"></div>'
+          + '</div>'
+          + '<div style="margin-top:10px;border-top:1px dashed #ffcc80;padding-top:6px;">'
+          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:4px;">任务权限名单</div>'
+          + '<div style="font-size:10px;color:#999;margin-bottom:4px;">可查看任务 tab 的用户名，每行一个</div>'
+          + '<textarea id="tuopin-task-whitelist" rows="4" placeholder="每行一个用户名" style="width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;"></textarea>'
+          + '<button id="tuopin-task-whitelist-save" style="width:100%;margin-top:4px;padding:5px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">保存名单</button>'
+          + '<div id="tuopin-task-whitelist-log" style="font-size:10px;color:#52c41a;margin-top:3px;"></div>'
           + '</div></div>'
           + '</div>';
         panel.innerHTML = h;
         getRightStack().appendChild(panel);
 
-        // 异步请求 SSO 门户识别登录人，仅 handongxue 激活管理员模式
+        // 异步请求 SSO 门户识别登录人，仅 handongxue 激活管理员模式，权限名单内用户显示任务 tab
         GM_xmlhttpRequest({
           method: 'GET', url: 'https://sso-bgm.smzdm.com/uas-sso/root/auth/app_list.action', timeout: 6000,
           onload: function(r) {
             try {
               var m = r.responseText.match(/欢\s*迎\s*([\w]+)登录/);
-              if (m && m[1] === 'handongxue') {
+              if (!m) return;
+              var loginName = m[1];
+              // 管理员
+              if (loginName === 'handongxue') {
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
+                // 初始化权限名单 textarea
+                var wlTA = document.getElementById('tuopin-task-whitelist');
+                if (wlTA) {
+                  var wlList = [];
+                  try { wlList = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+                  wlTA.value = wlList.join('\n');
+                }
                 // 管理员确认身份后：若 relay 今天还没有时段数据，自动把本地模式推送上去
                 coSlotsGet(function(chk) {
                   if (chk.ok && !(chk.slots || []).length) {
@@ -4132,6 +4149,14 @@
                     }
                   }
                 });
+              }
+              // 检查权限名单（管理员自己也在名单内自动可见任务 tab）
+              var taskWhitelist = [];
+              try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+              var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
+              if (canSeeTask) {
+                var taskTabBtn = document.getElementById('co-tab-btn-task');
+                if (taskTabBtn) taskTabBtn.style.display = '';
               }
             } catch(e) {}
           },
@@ -4559,6 +4584,30 @@
           });
         };
 
+        // 权限名单 保存按钮
+        var wlSaveBtn = document.getElementById('tuopin-task-whitelist-save');
+        if (wlSaveBtn) wlSaveBtn.onclick = function() {
+          var raw = (document.getElementById('tuopin-task-whitelist').value || '').trim();
+          var names = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+          GM_setValue('tuopin_task_whitelist', JSON.stringify(names));
+          var logEl = document.getElementById('tuopin-task-whitelist-log');
+          if (logEl) logEl.textContent = '⏳ 保存中...';
+          // 同步推送到 relay 服务端
+          GM_xmlhttpRequest({
+            method: 'POST', url: RELAY + '/task/whitelist',
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify({ who: 'handongxue', whitelist: names }),
+            timeout: 5000,
+            onload: function(r) {
+              try {
+                var res = JSON.parse(r.responseText || '{}');
+                if (logEl) logEl.textContent = res.ok ? ('✓ 已同步到服务端，共 ' + names.length + ' 个用户') : ('✗ 服务端保存失败：' + (res.error || ''));
+              } catch(e) { if (logEl) logEl.textContent = '✗ 解析失败'; }
+            },
+            onerror: function() { if (logEl) logEl.textContent = '✗ 网络错误，仅保存本地'; }
+          });
+        };
+
         // 任务 发布按钮
         var taskGoBtn = document.getElementById('tuopin-task-go');
         if (taskGoBtn) taskGoBtn.onclick = function() {
@@ -4610,7 +4659,11 @@
             // 取号：立即写入 relay 占位（原子操作）
             coSlotsClaim(slot.startTime, who, claimInfo, function(claimRes){
               if (!claimRes || !claimRes.ok) {
-                alert('该时段已被他人取号：' + (claimRes && claimRes.claimedBy || '') + '，请刷新后重试');
+                if (claimRes && claimRes.error === 'no_permission') {
+                  alert('您没有发布任务的权限，请联系管理员添加');
+                } else {
+                  alert('该时段已被他人取号：' + (claimRes && claimRes.claimedBy || '') + '，请刷新后重试');
+                }
                 coRefreshSlots();
                 return;
               }
