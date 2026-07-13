@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.7.2
+// @version      3.7.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1546,7 +1546,9 @@
         '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>';
       var bodyDisplay = collapsed ? 'none' : 'block';
       h += '<div id="ds-body" style="display:' + bodyDisplay + ';">';
-      h += '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">商品名</label>' +
+      h += '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">品牌</label>' +
+        '<input id="ds-brand" type="text" placeholder="可选，填后自动拼入表单名称" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">商品名</label>' +
         '<input id="ds-title" type="text" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;margin-bottom:4px;">' +
         '<div style="display:flex;align-items:center;gap:4px;min-width:0;"><label style="color:#666;font-size:11px;white-space:nowrap;">到手价</label><input id="ds-deal" type="text" style="flex:1;min-width:0;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
@@ -1779,6 +1781,8 @@
         await dsSleep(500);
       }
       if (t && titleEl) t.value = titleEl.value || '';
+      var brandInput = document.getElementById('ds-brand');
+      if (brandInput) { var brandEl = document.querySelector('#article_brand, [name="article_brand"]'); if (brandEl) brandInput.value = brandEl.value || ''; }
       // 到手价 = 订单价(article_final_price)；折单价 = 折后单价(article_digital_price)
       if (d && dealEl) { d.value = dealEl.value || ''; dsBaseDeal = d.value; }
       if (u && unitEl) { u.value = unitEl.value || ''; dsBaseUnit = u.value; }
@@ -1869,6 +1873,7 @@
       dsLog('开始注入...');
 
       var title = (document.getElementById('ds-title').value || '').trim();
+      var brand = (document.getElementById('ds-brand') ? document.getElementById('ds-brand').value || '' : '').trim();
       var deal = (document.getElementById('ds-deal').value || '').trim();
       var unit = (document.getElementById('ds-unit').value || '').trim();
       var subsidy = parseFloat(document.getElementById('ds-subsidy').value || '0') || 0;
@@ -2018,6 +2023,7 @@
           sq.push({
             articleId: articleId,
             title: title,
+            brand: brand,
             productLink: dsDirectLink || '',
             price: unit,
             dealPrice: deal,
@@ -2744,20 +2750,21 @@
 
       var dates = calcDates();
 
-      // 1. 表单名称（日期+标题）
+      // 1. 表单名称（日期+品牌+标题）
       var now = new Date();
       var datePrefix = (now.getMonth() + 1) + '.' + now.getDate();
       var nameField = document.querySelector('input[placeholder*="用于表单后台展示"]');
-      var formName = datePrefix + (item.title || '').slice(0, 20);
+      var brand = (item.brand || '').trim();
+      var formName = datePrefix + (brand ? brand : '') + (item.title || '').slice(0, 20);
       if (nameField) { setInputValue(nameField, formName); subsidyLog('✓ 表单名称'); }
 
       // 1.2 表单标题（前台展示给用户，跟表单名称一样）
       var titleField = document.querySelector('input[placeholder*="前台展示给用户"]') || document.querySelector('input[placeholder*="非必填"]');
       if (titleField && titleField !== nameField) { setInputValue(titleField, formName); subsidyLog('✓ 表单标题'); }
 
-      // 1.5 商品标题（选填）
+      // 1.5 商品标题（品牌+商品名）
       var goodsTitleField = document.querySelector('input[placeholder*="用于好价详情页活动规则展示"]');
-      if (goodsTitleField) { setInputValue(goodsTitleField, item.title || ''); subsidyLog('✓ 商品标题'); }
+      if (goodsTitleField) { setInputValue(goodsTitleField, (brand ? brand : '') + (item.title || '')); subsidyLog('✓ 商品标题'); }
 
       // 2. 适用终端: APP+PC+Wap
       clickRadioByText('APP+PC+Wap');
