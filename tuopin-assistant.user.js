@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.6.4
+// @version      3.6.5
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2275,24 +2275,51 @@
               }
               if (saveAttempts >= 12) { document.title = '[未确认] 代码植入 ' + injectId; return; }
               saveAttempts++;
-              // 先处理弹窗：用公共 dismissPopup + 补充 J_GlobalConfirm + 关闭遮罩
-              var dpResult = dismissPopup();
+              // 先处理弹窗：只处理真正的弹窗（boxy/layui/el-dialog），不用 dismissPopup 避免误点正常页面按钮
+              var dpResult = null;
+              // boxy-btn3 优先忽略
+              var b3s = document.querySelectorAll('.boxy-btn3');
+              for (var b3i = 0; b3i < b3s.length; b3i++) {
+                if (b3s[b3i].offsetParent !== null) {
+                  if ((b3s[b3i].getAttribute('value') || '').indexOf('忽略') >= 0) { b3s[b3i].click(); dpResult = '忽略'; break; }
+                }
+              }
               if (!dpResult) {
-                // dismissPopup 未覆盖的特殊弹窗：J_GlobalConfirm（如"同步成功"）
+                for (var b3j = 0; b3j < b3s.length; b3j++) {
+                  if (b3s[b3j].offsetParent !== null) { b3s[b3j].click(); dpResult = 'btn3'; break; }
+                }
+              }
+              if (!dpResult) {
+                var b1 = document.querySelector('.boxy-btn1');
+                if (b1 && b1.offsetParent !== null) { b1.click(); dpResult = 'btn1'; }
+              }
+              if (!dpResult) {
+                var layer0 = document.querySelector('.layui-layer-btn0');
+                if (layer0 && layer0.offsetParent !== null) { layer0.click(); dpResult = 'layui'; }
+              }
+              if (!dpResult) {
                 var jc = document.querySelector('a.J_GlobalConfirm');
                 if (jc && jc.offsetParent !== null) { jc.click(); dpResult = 'J_GlobalConfirm'; }
               }
               if (!dpResult) {
-                // 尝试关闭可能存在的遮罩（如 boxy-modal-blackout）
                 var blk = document.querySelector('.boxy-modal-blackout');
                 if (blk && blk.offsetParent !== null) { blk.click(); dpResult = 'blackout'; }
+              }
+              if (!dpResult) {
+                // el-dialog / el-message-box
+                var elDlgs = document.querySelectorAll('.el-dialog__wrapper, .el-message-box__wrapper');
+                for (var ed = 0; ed < elDlgs.length; ed++) {
+                  if (elDlgs[ed].style.display === 'none' || elDlgs[ed].style.visibility === 'hidden') continue;
+                  var prim = elDlgs[ed].querySelector('.el-button--primary');
+                  if (prim && prim.offsetParent !== null) { prim.click(); dpResult = 'el-confirm'; break; }
+                }
               }
               if (dpResult) { setTimeout(trySave, 1200); return; }
               // 无弹窗，点"保存修改"
               var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
               for (var bi = 0; bi < btns.length; bi++) {
                 var bt = (btns[bi].textContent || '').trim() || btns[bi].value || '';
-                if (bt === '保存修改') { btns[bi].click(); break; }
+                if (bt === '保存修改' && btns[bi].offsetParent !== null) { btns[bi].click(); break; }
               }
               setTimeout(trySave, 1800);
             }
