@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.7.3
+// @version      3.7.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -43,7 +43,7 @@
 
   // ===== 版本更新检查：拉服务端 version.json 比对版本，发现新版在右上角弹更新横幅 =====
   (function checkUpdate() {
-    var VERSION_URL = 'https://mindpad-bgm.smzdm.com/tuopin-version.json';
+    var VERSION_URL = 'https://commission-bgm.agentdevops.zdm.net/tuopin-version';
     var DL_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
     var curVer = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : '';
     if (!curVer) return;
