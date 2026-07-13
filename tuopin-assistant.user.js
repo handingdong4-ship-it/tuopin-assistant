@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.6.3
+// @version      3.6.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2174,22 +2174,17 @@
                     clearInterval(itv); coLog2('✓ 保存成功'); return;
                   }
                   if (tries++ > 15) { clearInterval(itv); coLog2('⚠ 保存超时'); return; }
-                  // 优先处理弹窗（layui/layer/普通 confirm）
-                  var popSelectors = [
-                    '.layui-layer-btn0', '.layui-layer-btn a', '.layer-btn a',
-                    'button', 'input[type="button"]', 'input[type="submit"]', 'a.J_GlobalConfirm'
-                  ];
-                  var popFound = false;
-                  for (var s = 0; s < popSelectors.length && !popFound; s++) {
-                    var nodes = document.querySelectorAll(popSelectors[s]);
-                    for (var j = 0; j < nodes.length; j++) {
-                      var pv = (nodes[j].value || nodes[j].textContent || '').trim();
-                      if ((pv === '确定' || pv === '确认' || pv === 'OK') && nodes[j].offsetParent !== null) {
-                        nodes[j].click(); coLog2('✓ 点击弹窗确认: ' + pv); popFound = true; break;
-                      }
-                    }
+                  // 用公共 dismissPopup 处理弹窗（boxy/layui/el-dialog）
+                  var dpResult = dismissPopup();
+                  if (!dpResult) {
+                    var jc = document.querySelector('a.J_GlobalConfirm');
+                    if (jc && jc.offsetParent !== null) { jc.click(); dpResult = 'J_GlobalConfirm'; }
                   }
-                  if (popFound) return;
+                  if (!dpResult) {
+                    var blk = document.querySelector('.boxy-modal-blackout');
+                    if (blk && blk.offsetParent !== null) { blk.click(); dpResult = 'blackout'; }
+                  }
+                  if (dpResult) { coLog2('✓ 处理弹窗: ' + dpResult); return; }
                   // 没有弹窗，点"保存修改"
                   var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
                   for (var k = 0; k < btns.length; k++) {
@@ -2278,27 +2273,21 @@
                 console.log('[代码植入] ✓ 保存成功');
                 document.title = '[完成] 代码植入 ' + injectId; return;
               }
-              if (saveAttempts >= 8) { document.title = '[未确认] 代码植入 ' + injectId; return; }
+              if (saveAttempts >= 12) { document.title = '[未确认] 代码植入 ' + injectId; return; }
               saveAttempts++;
-              // 先处理可能存在的弹窗
-              var popFound = false;
-              var popSelectors = ['.boxy-btn3', '.boxy-btn1', '.boxy-btn2', '.layui-layer-btn0', 'a.J_GlobalConfirm'];
-              for (var pi = 0; pi < popSelectors.length; pi++) {
-                var nodes = document.querySelectorAll(popSelectors[pi]);
-                for (var j = 0; j < nodes.length; j++) {
-                  if (nodes[j].offsetParent !== null) {
-                    var pv = (nodes[j].textContent || nodes[j].value || '').trim();
-                    // boxy-btn3 优先点"忽略"
-                    if (popSelectors[pi] === '.boxy-btn3') {
-                      if (pv.indexOf('忽略') !== -1) { nodes[j].click(); popFound = true; break; }
-                    } else if (pv === '确定' || pv === '确认' || pv === 'OK' || pv.indexOf('忽略') !== -1) {
-                      nodes[j].click(); popFound = true; break;
-                    }
-                  }
-                }
-                if (popFound) break;
+              // 先处理弹窗：用公共 dismissPopup + 补充 J_GlobalConfirm + 关闭遮罩
+              var dpResult = dismissPopup();
+              if (!dpResult) {
+                // dismissPopup 未覆盖的特殊弹窗：J_GlobalConfirm（如"同步成功"）
+                var jc = document.querySelector('a.J_GlobalConfirm');
+                if (jc && jc.offsetParent !== null) { jc.click(); dpResult = 'J_GlobalConfirm'; }
               }
-              if (popFound) { setTimeout(trySave, 1500); return; }
+              if (!dpResult) {
+                // 尝试关闭可能存在的遮罩（如 boxy-modal-blackout）
+                var blk = document.querySelector('.boxy-modal-blackout');
+                if (blk && blk.offsetParent !== null) { blk.click(); dpResult = 'blackout'; }
+              }
+              if (dpResult) { setTimeout(trySave, 1200); return; }
               // 无弹窗，点"保存修改"
               var btns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
               for (var bi = 0; bi < btns.length; bi++) {
@@ -2721,7 +2710,12 @@
       var now = new Date();
       var datePrefix = (now.getMonth() + 1) + '.' + now.getDate();
       var nameField = document.querySelector('input[placeholder*="用于表单后台展示"]');
-      if (nameField) { setInputValue(nameField, datePrefix + (item.title || '').slice(0, 20)); subsidyLog('✓ 表单名称'); }
+      var formName = datePrefix + (item.title || '').slice(0, 20);
+      if (nameField) { setInputValue(nameField, formName); subsidyLog('✓ 表单名称'); }
+
+      // 1.2 表单标题（前台展示给用户，跟表单名称一样）
+      var titleField = document.querySelector('input[placeholder*="前台展示给用户"]') || document.querySelector('input[placeholder*="非必填"]');
+      if (titleField && titleField !== nameField) { setInputValue(titleField, formName); subsidyLog('✓ 表单标题'); }
 
       // 1.5 商品标题（选填）
       var goodsTitleField = document.querySelector('input[placeholder*="用于好价详情页活动规则展示"]');
@@ -3873,23 +3867,57 @@
                       onDone(false, '保存超时');
                       return;
                     }
-                    // 处理弹窗：优先"忽略提醒"，其次"确定/确认"
-                    var popBtns = doc.querySelectorAll('input[type="button"], input[type="submit"], button');
+                    // 处理弹窗：优先"忽略提醒"，其次"确定/确认"，再处理 el-dialog / J_GlobalConfirm / blackout
+                    var popBtns = doc.querySelectorAll('.boxy-btn3');
                     var popFound = false;
                     for (var j = 0; j < popBtns.length; j++) {
-                      var pv = (popBtns[j].value || popBtns[j].textContent || '').trim();
-                      if (pv.indexOf('忽略') >= 0 && popBtns[j].offsetParent !== null) {
-                        popBtns[j].click(); popFound = true; break;
+                      if (popBtns[j].offsetParent !== null) {
+                        var b3v = popBtns[j].getAttribute('value') || '';
+                        if (b3v.indexOf('忽略') >= 0) { popBtns[j].click(); popFound = true; break; }
                       }
                     }
                     if (!popFound) {
-                      for (var j2 = 0; j2 < popBtns.length; j2++) {
-                        var pv2 = (popBtns[j2].value || popBtns[j2].textContent || '').trim();
-                        if ((pv2 === '确定' || pv2 === '确认') && popBtns[j2].offsetParent !== null) {
-                          popBtns[j2].click(); popFound = true; break;
+                      for (var jb = 0; jb < popBtns.length; jb++) {
+                        if (popBtns[jb].offsetParent !== null) { popBtns[jb].click(); popFound = true; break; }
+                      }
+                    }
+                    if (!popFound) {
+                      var sel1 = doc.querySelector('.boxy-btn1');
+                      if (sel1 && sel1.offsetParent !== null) { sel1.click(); popFound = true; }
+                    }
+                    if (!popFound) {
+                      var layer0 = doc.querySelector('.layui-layer-btn0');
+                      if (layer0 && layer0.offsetParent !== null) { layer0.click(); popFound = true; }
+                    }
+                    if (!popFound) {
+                      var jc = doc.querySelector('a.J_GlobalConfirm');
+                      if (jc && jc.offsetParent !== null) { jc.click(); popFound = true; }
+                    }
+                    if (!popFound) {
+                      var blk = doc.querySelector('.boxy-modal-blackout');
+                      if (blk && blk.offsetParent !== null) { blk.click(); popFound = true; }
+                    }
+                    if (!popFound) {
+                      // Element UI dialog fallback
+                      var elDlgs = doc.querySelectorAll('.el-dialog__wrapper, .el-message-box__wrapper');
+                      for (var ed = 0; ed < elDlgs.length; ed++) {
+                        if (elDlgs[ed].offsetParent !== null) {
+                          var prim = elDlgs[ed].querySelector('.el-button--primary');
+                          if (prim && prim.offsetParent !== null) { prim.click(); popFound = true; break; }
                         }
                       }
                     }
+                    if (!popFound) {
+                      // 通用兜底：确定/确认/忽略
+                      var allBtns = doc.querySelectorAll('input[type="button"], input[type="submit"], button');
+                      for (var j2 = 0; j2 < allBtns.length; j2++) {
+                        var pv2 = (allBtns[j2].value || allBtns[j2].textContent || '').trim();
+                        if ((pv2 === '确定' || pv2 === '确认' || pv2.indexOf('忽略') >= 0) && allBtns[j2].offsetParent !== null) {
+                          allBtns[j2].click(); popFound = true; break;
+                        }
+                      }
+                    }
+                    if (popFound) return;
                     // 点保存修改
                     var btns = doc.querySelectorAll('button, input[type="button"], input[type="submit"]');
                     for (var k = 0; k < btns.length; k++) {
