@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.6.7
+// @version      3.6.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4118,6 +4118,8 @@
               var m = r.responseText.match(/欢\s*迎\s*([\w]+)登录/);
               if (!m) return;
               var loginName = m[1];
+              // 识别到用户名，存起来供 claim 使用
+              GM_setValue('tuopin_my_name', loginName);
               // 管理员
               if (loginName === 'handongxue') {
                 coIsAdmin = true;
