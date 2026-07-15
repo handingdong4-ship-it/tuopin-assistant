@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.3.2
+// @version      4.3.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3618,6 +3618,14 @@
       // ===== 任务时段共享端点（commission-relay /taskslots，多同事防撞车）=====
       var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
       var coSlotsCache = { date: '', slots: [], claimed: [] };
+      // 用本地缓存的今日槽位数据预填，relay 回来后再覆盖（让 tab 打开即有数）
+      try {
+        var _slotsLocal = JSON.parse(GM_getValue('tuopin_slots_cache', '{}'));
+        var _slotsToday = (function(){ var d=new Date(); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
+        if (_slotsLocal.date === _slotsToday && Array.isArray(_slotsLocal.slots)) {
+          coSlotsCache = { date: _slotsLocal.date, slots: _slotsLocal.slots, claimed: _slotsLocal.claimed || [] };
+        }
+      } catch(e) {}
       var coImgModelIdx = 0; // 图生图选中模型索引（0=即梦5.0, 1=GPT），面板按钮切换
       function coTodayStr() {
         var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;};
@@ -4314,6 +4322,19 @@
         panel.innerHTML = h;
         getRightStack().appendChild(panel);
 
+        // 用上次缓存的 loginName 先立刻判断任务 tab 可见性，无需等 SSO 返回
+        (function() {
+          var cachedName = GM_getValue('tuopin_my_name', '');
+          if (!cachedName) return;
+          var wlCache2 = {};
+          try { wlCache2 = JSON.parse(GM_getValue('tuopin_wl_cache', '{}')); } catch(e) {}
+          var list2 = wlCache2.list || [];
+          if (cachedName === 'handongxue' || list2.indexOf(cachedName) >= 0) {
+            var taskTabBtn = document.getElementById('co-tab-btn-task');
+            if (taskTabBtn) taskTabBtn.style.display = '';
+          }
+        })();
+
         // 异步请求 SSO 门户识别登录人，仅 handongxue 激活管理员模式，权限名单内用户显示任务 tab
         GM_xmlhttpRequest({
           method: 'GET', url: 'https://sso-bgm.smzdm.com/uas-sso/root/auth/app_list.action', timeout: 6000,
@@ -4969,6 +4990,8 @@
             coRenderSlotsAll();
             coRenderTaskDoneToday();
             if (btn) { btn.disabled = false; btn.textContent = '发布任务'; btn.style.background = '#ff7a00'; }
+            // 缓存最新槽位数据，供下次打开时即时渲染
+            try { GM_setValue('tuopin_slots_cache', JSON.stringify({ date: coSlotsCache.date, slots: coSlotsCache.slots, claimed: coSlotsCache.claimed })); } catch(e) {}
           });
         }
 
@@ -4985,6 +5008,7 @@
                 if (d.claimed !== undefined) coSlotsCache.claimed = d.claimed;
                 coRenderSlotsAll();
                 coRenderTaskDoneToday();
+                try { GM_setValue('tuopin_slots_cache', JSON.stringify({ date: coSlotsCache.date, slots: coSlotsCache.slots, claimed: coSlotsCache.claimed })); } catch(ex2) {}
               } catch(ex) {}
             };
             coSSE.onerror = function() { /* 浏览器自动重连 */ };
@@ -4992,6 +5016,7 @@
         }
         coStartSSE();
         coRefreshSlots(); // 页面加载时主动拉一次兜底（SSE init 可能延迟）
+        if (coSlotsCache.slots.length) coRenderSlotsAll(); // 有本地缓存时立即渲染，不等 relay 返回
         // 跨天时重启 SSE（防止订阅昨天的 date）
         var _sseDate = coTodayStr();
         setInterval(function() {
