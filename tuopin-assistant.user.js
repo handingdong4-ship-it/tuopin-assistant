@@ -4352,14 +4352,35 @@
                   }
                 });
               }
-              // 检查权限名单（管理员自己也在名单内自动可见任务 tab）
-              var taskWhitelist = [];
-              try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
-              var canSeeTask = taskWhitelist.indexOf(loginName) >= 0;
-              if (canSeeTask) {
-                var taskTabBtn = document.getElementById('co-tab-btn-task');
-                if (taskTabBtn) taskTabBtn.style.display = '';
-              }
+              // 从 relay 拉最新白名单，更新本地后再决定是否显示任务 tab
+              GM_xmlhttpRequest({
+                method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
+                onload: function(wr) {
+                  var taskWhitelist = [];
+                  try {
+                    var wd = JSON.parse(wr.responseText || '{}');
+                    taskWhitelist = wd.whitelist || [];
+                    GM_setValue('tuopin_task_whitelist', JSON.stringify(taskWhitelist));
+                  } catch(e) {
+                    try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e2) {}
+                  }
+                  var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
+                  if (canSeeTask) {
+                    var taskTabBtn = document.getElementById('co-tab-btn-task');
+                    if (taskTabBtn) taskTabBtn.style.display = '';
+                  }
+                },
+                onerror: function() {
+                  // relay 失败时 fallback 本地缓存
+                  var taskWhitelist = [];
+                  try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+                  var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
+                  if (canSeeTask) {
+                    var taskTabBtn = document.getElementById('co-tab-btn-task');
+                    if (taskTabBtn) taskTabBtn.style.display = '';
+                  }
+                }
+              });
             } catch(e) {}
           },
           onerror: function() {}
