@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.2.7
+// @version      4.3.0
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4601,48 +4601,43 @@
           var articleId = CO_ARTICLE_ID;
           var safeId = String(articleId).replace(/'/g, '');
 
-          // 第一步：只查归因表，小表快
-          var sqlA = 'SELECT ascribe_gmv, ascribe_cps, ascribe_order, marketing_id, youhui_shop_name'
-            + ' FROM bi_app.dm_zdm_haojia_a final'
-            + ' WHERE article_id = \'' + safeId + '\''
-            + ' LIMIT 1';
+          // 一次 JOIN 替代两步串行，减少一次网络往返
+          var sqlJoin = 'SELECT'
+            + '  a.ascribe_gmv, a.ascribe_cps, a.ascribe_order, a.marketing_id, a.youhui_shop_name,'
+            + '  ROUND(SUM(b.gmv_rmb)) AS map_gmv,'
+            + '  ROUND(SUM(b.cps)) AS map_cps,'
+            + '  ROUND(SUM(b.order_num)) AS map_order_num'
+            + ' FROM ('
+            + '   SELECT ascribe_gmv, ascribe_cps, ascribe_order, marketing_id, youhui_shop_name'
+            + '   FROM bi_app.dm_zdm_haojia_a final'
+            + '   WHERE article_id = \'' + safeId + '\''
+            + '   LIMIT 1'
+            + ' ) a'
+            + ' LEFT JOIN bi_app.ads_zdm_trade_orderproduct_realtime final b'
+            + ' ON toString(b.pro_id) = toString(a.marketing_id)'
+            + ' AND toDate(b.order_create_time) BETWEEN today()-2 AND today()'
+            + ' AND b.is_valid_order = \'1\''
+            + ' GROUP BY a.ascribe_gmv, a.ascribe_cps, a.ascribe_order, a.marketing_id, a.youhui_shop_name';
 
-          supersetQuery(sqlA, function(errA, rA) {
-            if (errA) {
+          supersetQuery(sqlJoin, function(errJ, rJ) {
+            if (errJ) {
               var box2 = document.getElementById('co-sales-content');
-              if (box2) box2.innerHTML = '<div style="color:#ff4d4f;font-size:11px;padding:8px;">查询失败: ' + coEsc(String(errA).slice(0, 200)) + '</div>';
+              if (box2) box2.innerHTML = '<div style="color:#ff4d4f;font-size:11px;padding:8px;">查询失败: ' + coEsc(String(errJ).slice(0, 200)) + '</div>';
               return;
             }
-            var baseRow = (rA && rA.data && rA.data[0]) ? rA.data[0] : null;
-
-            // 没有归因数据直接渲染，不再查 realtime
-            if (!baseRow || !baseRow.marketing_id) {
-              renderAll(null);
-              return;
-            }
-
-            // 第二步：用 marketing_id 精确过滤 realtime，避免全表扫描
-            var mid = String(baseRow.marketing_id).replace(/'/g, '');
-            var sqlB = 'SELECT ROUND(SUM(gmv_rmb)) AS map_gmv, ROUND(SUM(cps)) AS map_cps, ROUND(SUM(order_num)) AS map_order_num'
-              + ' FROM bi_app.ads_zdm_trade_orderproduct_realtime final'
-              + ' WHERE pro_id = \'' + mid + '\''
-              + ' AND toDate(order_create_time) BETWEEN today()-2 AND today()'
-              + ' AND is_valid_order = \'1\'';
-
-            supersetQuery(sqlB, function(errB, rB) {
-              var mapRow = (!errB && rB && rB.data && rB.data[0]) ? rB.data[0] : {};
-              var row = {
-                ascribe_gmv: baseRow.ascribe_gmv,
-                ascribe_cps: baseRow.ascribe_cps,
-                ascribe_order: baseRow.ascribe_order,
-                youhui_shop_name: baseRow.youhui_shop_name,
-                map_gmv: mapRow.map_gmv || 0,
-                map_cps: mapRow.map_cps || 0,
-                map_order_num: mapRow.map_order_num || 0,
-              };
-              if (row) { try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {} }
-              renderAll(row);
-            });
+            var r0 = (rJ && rJ.data && rJ.data[0]) ? rJ.data[0] : null;
+            if (!r0) { renderAll(null); return; }
+            var row = {
+              ascribe_gmv: r0.ascribe_gmv,
+              ascribe_cps: r0.ascribe_cps,
+              ascribe_order: r0.ascribe_order,
+              youhui_shop_name: r0.youhui_shop_name,
+              map_gmv: r0.map_gmv || 0,
+              map_cps: r0.map_cps || 0,
+              map_order_num: r0.map_order_num || 0,
+            };
+            try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {}
+            renderAll(row);
           });
 
           function renderAll(row) {
