@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.3.0
+// @version      4.3.2
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4593,51 +4593,52 @@
                   cb(null, { data: rows, _raw: j });
                 } catch(e) { cb('解析失败: ' + e.message); }
               },
-              onerror: function(e) { console.log('[sales] onerror', e); cb('请求失败'); },
-              ontimeout: function() { cb('超时'); }
+              onerror: function(e) { console.log('[sales] onerror status=' + e.status + ' finalUrl=' + e.finalUrl, e); cb('请求失败(网络错误，请检查Tampermonkey是否授权连接bi-superset-bgm.smzdm.com，或重新安装脚本)'); },
+              ontimeout: function() { cb('超时(查询超过35s)'); }
             });
           }
 
           var articleId = CO_ARTICLE_ID;
           var safeId = String(articleId).replace(/'/g, '');
 
-          // 一次 JOIN 替代两步串行，减少一次网络往返
-          var sqlJoin = 'SELECT'
-            + '  a.ascribe_gmv, a.ascribe_cps, a.ascribe_order, a.marketing_id, a.youhui_shop_name,'
-            + '  ROUND(SUM(b.gmv_rmb)) AS map_gmv,'
-            + '  ROUND(SUM(b.cps)) AS map_cps,'
-            + '  ROUND(SUM(b.order_num)) AS map_order_num'
-            + ' FROM ('
-            + '   SELECT ascribe_gmv, ascribe_cps, ascribe_order, marketing_id, youhui_shop_name'
-            + '   FROM bi_app.dm_zdm_haojia_a final'
-            + '   WHERE article_id = \'' + safeId + '\''
-            + '   LIMIT 1'
-            + ' ) a'
-            + ' LEFT JOIN bi_app.ads_zdm_trade_orderproduct_realtime final b'
-            + ' ON toString(b.pro_id) = toString(a.marketing_id)'
-            + ' AND toDate(b.order_create_time) BETWEEN today()-2 AND today()'
-            + ' AND b.is_valid_order = \'1\''
-            + ' GROUP BY a.ascribe_gmv, a.ascribe_cps, a.ascribe_order, a.marketing_id, a.youhui_shop_name';
+          // 第一步：归因表（必须）
+          var sqlA = 'SELECT ascribe_gmv, ascribe_cps, ascribe_order, marketing_id, youhui_shop_name'
+            + ' FROM bi_app.dm_zdm_haojia_a final'
+            + ' WHERE article_id = \'' + safeId + '\''
+            + ' LIMIT 1';
 
-          supersetQuery(sqlJoin, function(errJ, rJ) {
-            if (errJ) {
+          supersetQuery(sqlA, function(errA, rA) {
+            if (errA) {
               var box2 = document.getElementById('co-sales-content');
-              if (box2) box2.innerHTML = '<div style="color:#ff4d4f;font-size:11px;padding:8px;">查询失败: ' + coEsc(String(errJ).slice(0, 200)) + '</div>';
+              if (box2) box2.innerHTML = '<div style="color:#ff4d4f;font-size:11px;padding:8px;">查询失败: ' + coEsc(String(errA).slice(0, 200)) + '</div>';
               return;
             }
-            var r0 = (rJ && rJ.data && rJ.data[0]) ? rJ.data[0] : null;
-            if (!r0) { renderAll(null); return; }
-            var row = {
-              ascribe_gmv: r0.ascribe_gmv,
-              ascribe_cps: r0.ascribe_cps,
-              ascribe_order: r0.ascribe_order,
-              youhui_shop_name: r0.youhui_shop_name,
-              map_gmv: r0.map_gmv || 0,
-              map_cps: r0.map_cps || 0,
-              map_order_num: r0.map_order_num || 0,
-            };
-            try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {}
-            renderAll(row);
+            var baseRow = (rA && rA.data && rA.data[0]) ? rA.data[0] : null;
+            if (!baseRow || !baseRow.marketing_id) { renderAll(null); return; }
+
+            // 第二步：实时映射表（可选，无权限时跳过）
+            var mid = String(baseRow.marketing_id).replace(/'/g, '');
+            var sqlB = 'SELECT ROUND(SUM(gmv_rmb)) AS map_gmv, ROUND(SUM(cps)) AS map_cps, ROUND(SUM(order_num)) AS map_order_num'
+              + ' FROM bi_app.ads_zdm_trade_orderproduct_realtime final'
+              + ' WHERE pro_id = \'' + mid + '\''
+              + ' AND toDate(order_create_time) BETWEEN today()-2 AND today()'
+              + ' AND is_valid_order = \'1\'';
+
+            supersetQuery(sqlB, function(errB, rB) {
+              var mapRow = (!errB && rB && rB.data && rB.data[0]) ? rB.data[0] : {};
+              var row = {
+                ascribe_gmv: baseRow.ascribe_gmv,
+                ascribe_cps: baseRow.ascribe_cps,
+                ascribe_order: baseRow.ascribe_order,
+                youhui_shop_name: baseRow.youhui_shop_name,
+                map_gmv: mapRow.map_gmv || 0,
+                map_cps: mapRow.map_cps || 0,
+                map_order_num: mapRow.map_order_num || 0,
+                map_no_perm: !!errB,
+              };
+              try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {}
+              renderAll(row);
+            });
           });
 
           function renderAll(row) {
@@ -4664,7 +4665,9 @@
 
               // 近3日映射
               html += '<div style="font-weight:600;color:#333;font-size:11px;margin-bottom:4px;margin-top:8px;">近3日映射数据</div>';
-              if (row && (row.map_gmv || row.map_cps)) {
+              if (row && row.map_no_perm) {
+                html += '<div style="color:#bbb;font-size:11px;padding:4px 0;">无查询权限</div>';
+              } else if (row && (row.map_gmv || row.map_cps)) {
                 var g2 = 'display:flex;justify-content:space-between;';
                 html += '<div style="background:#f6ffed;border-radius:4px;padding:6px 8px;font-size:11px;">'
                   + '<div style="' + g2 + 'margin-bottom:3px;">'
