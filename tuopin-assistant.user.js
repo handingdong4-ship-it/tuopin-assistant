@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.2.6
+// @version      4.2.7
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4409,9 +4409,13 @@
                 });
               }
 
-              if (dbCache.date === _today) {
+              // 当前用户的 ID 已在今天缓存中 → 直接用（省去一次请求）
+              // 否则（新加入的用户 / 缓存过期）→ 立刻从 relay 拉取，确保管理员刚添加的 ID 立即生效
+              var dbidsCached = dbCache.date === _today && dbCache.dbids && dbCache.dbids[loginName];
+              if (dbidsCached) {
                 applyDbids(dbCache.dbids || {});
               } else {
+                if (dbCache.dbids) applyDbids(dbCache.dbids); // 先用旧缓存初始化
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/superset/dbids', timeout: 4000,
                   onload: function(dr) {
