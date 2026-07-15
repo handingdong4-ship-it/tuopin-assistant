@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      3.7.4
+// @version      4.0.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -30,6 +30,7 @@
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
 // @connect      commission-bgm.agentdevops.zdm.net
+// @connect      youhui.bgm.smzdm.com
 // @connect      sso-bgm.smzdm.com
 // @connect      10.45.148.12
 // @connect      gw-openapi-bgm.smzdm.com
@@ -2146,19 +2147,57 @@
           }
 
           waitReady(function () {
-            // 1. 填焦点图 URL
-            var focusInput = findFocusInput();
-            if (focusInput) {
-              setV(focusInput, coConfirmUrl);
-              coLog2('✓ 已填入焦点图 URL: ' + coConfirmUrl.slice(0, 60));
-              // 300ms 后点"获取"
+            // 1. 找上传输入框（与"上传"按钮同行，在"图片地址"行上方）→ 填URL → 点"上传" → 点"设为焦点图"
+            function findUploadInputAndBtn() {
+              var btns = document.querySelectorAll('button, input[type="button"]');
+              for (var i = 0; i < btns.length; i++) {
+                var t = (btns[i].textContent || btns[i].value || '').trim();
+                if (t === '上传') {
+                  var row = btns[i].closest('tr') || btns[i].parentElement;
+                  if (row) {
+                    var inp = row.querySelector('input[type="text"]');
+                    if (inp) return { input: inp, uploadBtn: btns[i] };
+                  }
+                }
+              }
+              return null;
+            }
+            function findSetFocusBtn() {
+              var btns = document.querySelectorAll('button, input[type="button"]');
+              for (var i = 0; i < btns.length; i++) {
+                var t = (btns[i].textContent || btns[i].value || '').trim();
+                if (t === '设为焦点图') return btns[i];
+              }
+              return null;
+            }
+
+            var uploadPair = findUploadInputAndBtn();
+            if (uploadPair) {
+              setV(uploadPair.input, coConfirmUrl);
+              coLog2('✓ 已填入上传框 URL: ' + coConfirmUrl.slice(0, 60));
               setTimeout(function () {
-                var getBtn = findGetBtn(focusInput);
-                if (getBtn) { getBtn.click(); coLog2('✓ 已点击获取'); }
-                else { coLog2('⚠ 未找到获取按钮，跳过获取步骤'); }
-              }, 300);
+                uploadPair.uploadBtn.click();
+                coLog2('✓ 已点击上传');
+                // 等上传处理完（约1s）再点"设为焦点图"
+                setTimeout(function () {
+                  var focusBtn = findSetFocusBtn();
+                  if (focusBtn) { focusBtn.click(); coLog2('✓ 已点击设为焦点图'); }
+                  else { coLog2('⚠ 未找到设为焦点图按钮'); }
+                }, 1200);
+              }, 400);
             } else {
-              coLog2('⚠ 未找到焦点图输入框，尝试直接保存');
+              // fallback：直接填焦点图字段+获取
+              var focusInput = findFocusInput();
+              if (focusInput) {
+                setV(focusInput, coConfirmUrl);
+                coLog2('✓ fallback: 已填入焦点图 URL');
+                setTimeout(function () {
+                  var getBtn = findGetBtn(focusInput);
+                  if (getBtn) { getBtn.click(); coLog2('✓ 已点击获取'); }
+                }, 300);
+              } else {
+                coLog2('⚠ 未找到上传框和焦点图框，跳过');
+              }
             }
 
             // 2. 加标签"内容优化"（等获取处理完再加）
@@ -3323,21 +3362,79 @@
       // 6张图各自的拍摄角度，确保多角度出图
       // 6个分镜头，idx 0-5 一一对应，剪辑时按顺序拼接即成完整视频
       var IMG_ANGLES = [
-        '【镜头1·建立景】广角远景，商品置于完整场景环境中，交代空间与氛围，背景与场景词呼应，构图留白充裕',
-        '【镜头2·中景入场】商品主体占画面1/2，人手或道具自然入画，背景场景清晰可见，有故事感与生活气息',
-        '【镜头3·产品正面】正面平视特写，商品充满画面，品牌/包装/颜色清晰，光线均匀干净，突出产品颜值',
-        '【镜头4·质感微距】极近微距，聚焦商品最具质感的局部（纹理/截面/材质），背景完全虚化，细节震撼',
-        '【镜头5·俯拍平铺】正上方垂直俯视，商品平铺摆放，道具点缀，构图饱满对称，电商平铺风格',
-        '【镜头6·斜侧收尾】斜侧45度低角度仰拍，商品有空间纵深感，光线从侧后方打出轮廓光，氛围收尾'
+        '【镜头1·开场建立】电影级广角远景，商品静置于精心布置的场景中，环境光柔和，景深悠长，镜头缓慢推进，氛围感强烈，留白充裕，电影开场质感',
+        '【镜头2·动态入场】中景，人手或道具自然优雅地伸入画面与商品互动，浅景深背景虚化，暖光侧逆光勾勒轮廓，镜头跟随动作微微移动，生活感与故事感并存',
+        '【镜头3·产品特写】正面平视极致特写，商品充满画面，专业摄影级布光，冷暖对比光营造立体感，品牌与质感一览无余，电商硬广质感',
+        '【镜头4·质感微距】电影微距镜头，聚焦商品最震撼的局部细节（纹理/截面/光泽/材质），背景完全虚化成奶油光斑，细节冲击力强，慢速推进感',
+        '【镜头5·俯拍平铺】正上方垂直俯视，商品与道具精心平铺，构图饱满对称，色彩和谐，镜头缓缓旋转下压，俯拍电影感构图',
+        '【镜头6·氛围收尾】斜侧45度低角度仰拍，商品有强烈空间纵深感，侧后方轮廓光勾勒边缘，烟雾或光晕氛围感，镜头缓慢拉远，电影收尾质感'
       ];
       var VID_MODELS = [
-        { id: 'i2v_2_2_20260402_v3', name: 'Seedance2.0Fast', time: 5, res: '480p' },
-        { id: 'i2v_5_2_20260313_v2', name: 'Hailuo2.0',        time: 6, res: '1080p' }
+        { id: 'i2v_2_2_20260402_v3', name: 'Seedance2.0Fast', time: 5, res: '480p',  imgField: 'image_urls' },
+        { id: 'i2v_6_2_20260325_v2', name: 'Keling',           time: 6, res: '1080p', imgField: 'image_urls' }
       ];
       var SRC_TAG = '_source=7b85549f29393c995e53907313141784';
       var CO_ARTICLE_ID = (function () { var m = location.pathname.match(/\/p\/(\d+)/); return m ? m[1] : '0'; })();
       var CO_SESSION_KEY = 'tuopin_co_session_' + CO_ARTICLE_ID;   // 3h 内刷新免责恢复
       var CO_HIST_KEY = 'tuopin_co_history';
+
+      // 参考图预取：页面加载时立即发 JSON API 请求，打开面板时直接用缓存
+      // 两步串行：① ajax_get_article_detail 取焦点图+商品链接 → ② ajax_get_product_info 取商品图列表
+      var coRefImgCache = null;
+      var coRefImgCacheCallbacks = [];
+      (function() {
+        if (!CO_ARTICLE_ID || CO_ARTICLE_ID === '0') return;
+        var _hdr = { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' };
+        function _done(imgs) {
+          coRefImgCache = imgs;
+          coRefImgCacheCallbacks.forEach(function(cb) { cb(imgs); });
+          coRefImgCacheCallbacks = [];
+        }
+        function addRefImg(seen, imgs, u) {
+          if (!u) return;
+          u = u.trim().replace(/^http:/, 'https:');
+          if (u && !seen[u]) { seen[u] = 1; imgs.push(u); }
+        }
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: 'http://youhui.bgm.smzdm.com/youhui_action/ajax_get_article_detail',
+          headers: _hdr,
+          data: 'article_id=' + CO_ARTICLE_ID + '&channel_id=1',
+          timeout: 10000,
+          onload: function(r1) {
+            var seen = {}, imgs = [], productUrl = '';
+            try {
+              var detail = JSON.parse(r1.responseText);
+              if (detail.article_pic_url) addRefImg(seen, imgs, detail.article_pic_url);
+              productUrl = detail.article_clean_link || detail.article_direct_link || '';
+            } catch(e) {}
+            if (!productUrl) { _done(imgs); return; }
+            // 第二步：取商品图片列表（图片地址那个位置）
+            GM_xmlhttpRequest({
+              method: 'POST',
+              url: 'http://youhui.bgm.smzdm.com/youhui_action/ajax_get_product_info',
+              headers: _hdr,
+              data: 'product_link=' + encodeURIComponent(productUrl) + '&article_id=' + CO_ARTICLE_ID + '&with_cache=1',
+              timeout: 10000,
+              onload: function(r2) {
+                try {
+                  var pi = JSON.parse(r2.responseText);
+                  var list = (pi.data && pi.data.img_list) || [];
+                  list.forEach(function(item) {
+                    // 优先用已转存的 zdmimg，没有则用原图 URL
+                    addRefImg(seen, imgs, item.pic_url || item.line_url);
+                  });
+                } catch(e) {}
+                _done(imgs);
+              },
+              onerror: function() { _done(imgs); },
+              ontimeout: function() { _done(imgs); }
+            });
+          },
+          onerror: function() { _done([]); },
+          ontimeout: function() { _done([]); }
+        });
+      })();
 
       function coLog(msg) {
         var box = document.getElementById('tuopin-co-log');
@@ -3608,16 +3705,26 @@
         }
 
         var message = '【独立请求】请忽略之前所有对话内容，这是一个全新的生成任务。\n'
-          + '【强制中文】整条提示词中不得出现任何英文单词、英文字母组合或拼音，包括镜头术语都必须用中文（如"特写"而非"close-up"，"暖光"而非"warm light"）。\n'
           + imgPart
-          + '你是一个电商短视频提示词生成器。'
-          + (articleTitle ? '本次要展示的商品名称是：【' + articleTitle + '】。\n' : '')
+          + '你是一位专业商业影片导演，擅长用真实摄影语言让静态商品产生动感与空间感。\n'
+          + (articleTitle ? '本次商品：【' + articleTitle + '】。\n' : '')
           + taskDesc
-          + '生成 2 条适合图生视频的动态场景提示词，每条用于生成一段 6 秒商品展示短视频。\n'
-          + '规则：①【重要】商品必须出现在画面正中心/前景，是视频主角；②描述动态动作（人物拿起/使用/享用商品、商品包装特写旋转等）；'
-          + '③描述环境氛围/镜头运动（推镜/拉镜/环绕/升降）；④不写品牌名，用中文通用词代替；'
-          + '⑤每条 30-60 字，画面感和动态感强；⑥单个连贯场景，严禁拼图/多格/分镜。\n'
-          + '输出格式（严格遵守，不要额外解释，不要前后缀，必须中文）：\n1. <中文提示词1>\n2. <中文提示词2>';
+          + '生成 2 条适合图生视频的电影级运镜提示词，每条对应一段 6 秒商品展示短视频。\n\n'
+          + '【生成规则】请依次分析并融合以下维度，输出一条完整连贯的提示词：\n'
+          + '① 景别：根据商品大小和展示重点选择——极特写(放大商品最震撼的局部细节) 或 电影级广角(展示商品与环境的宏观关系)，或两者结合作为运镜起止点\n'
+          + '② 拍摄角度：根据商品形态选择——包装类正面平视/斜侧俯拍；食材类低角仰拍突出食欲感；散件/铺陈类正上方垂直俯拍\n'
+          + '③ 构图运动：基于商品构图特点设计运镜——产品居中则做缓慢推进或旋转环绕；多元素平铺则做从上到下扫描或旋转俯拍；局部特写则做从模糊到对焦的拉近\n'
+          + '④ 运镜类型：推镜(dolly in)/拉镜(pull back)/环绕(orbit)/升降(crane)/旋转俯拍(top-down spin)/从虚到实对焦推进，根据场景选一种\n'
+          + '⑤ 光影与色调：根据商品品类自动匹配——零食/糕点用暖金逆光+柔和焦外光斑；生鲜/饮品用冷白清透光；家居/电器用中性侧光勾勒轮廓；美妆用柔光+高饱和色彩定调\n\n'
+          + '【强制要求】\n'
+          + '• 商品始终是画面主角，出现在前景或中心\n'
+          + '• 严禁改变商品外观、形状、包装、颜色、文字，商品必须与参考图完全一致\n'
+          + '• 只描述镜头运动和光影氛围，不描述商品本身发生任何形态变化\n'
+          + '• 提示词必须全部用中文，禁止出现任何英文单词或拼音\n'
+          + '• 每条 40-70 字，画面感、动态感、空间感强烈\n'
+          + '• 单一连贯场景，严禁拼图/多格/分镜\n'
+          + '• 不写品牌名，用品类通用词代替\n\n'
+          + '输出格式（严格遵守，无多余内容）：\n1. <中文提示词1>\n2. <中文提示词2>';
 
         function createAndRun(doneCb, errCb) {
           GM_xmlhttpRequest({
@@ -3747,20 +3854,29 @@
         return '，电商商业摄影风格，背景干净简洁，精准专业布光，色彩饱和真实，产品细节清晰锐利，截面质感逼真，食欲感强，高清实拍质感，8K';
       }
 
-      function coCreateImg(prompt, productImg, idx, onOk, onErr) {
+      function coCreateImg(prompt, productImgs, idx, onOk, onErr) {
         var apiKey = GM_getValue(CO_KEY, '');
         if (!apiKey) { onErr('未配置 API Key'); return; }
         var imgUrls = [];
-        if (productImg) { var u = productImg + (productImg.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; imgUrls.push(u); }
+        var srcs = Array.isArray(productImgs) ? productImgs : (productImgs ? [productImgs] : []);
+        srcs.forEach(function(u) { if (u) imgUrls.push(u + (u.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG); });
         var title = coGetArticleTitle ? coGetArticleTitle() : '';
         var stylePrompt = prompt + coGetStyleSuffix(title);
         var modelIdx = coImgModelIdx % IMG_MODELS.length;
+        // 两个模型都通过 prompt 强制 1:1，防止跟随参考图比例
+        stylePrompt = '正方形画面，1:1比例构图，' + stylePrompt;
         var payload = {
           _api_key: apiKey,
-          model: IMG_MODELS[modelIdx], prompt: stylePrompt, resolution: IMG_RES,
+          model: IMG_MODELS[modelIdx], prompt: stylePrompt,
           upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc', public_host: 0 },
           image_urls: imgUrls
         };
+        if (modelIdx === 0) {
+          payload.resolution = IMG_RES;
+          payload.aspect_ratio = '1:1';
+        } else {
+          payload.resolution = '1k'; // GPT 用 '1k'，同扩展保持一致
+        }
         // 提交到 relay，relay 后台调 gw-openapi，不受浏览器刷新影响
         GM_xmlhttpRequest({
           method: 'POST', url: RELAY + '/pictures/submit',
@@ -3781,7 +3897,12 @@
                     try {
                       var j2 = JSON.parse(r2.responseText);
                       if (!j2.ok) { clearInterval(itv); onErr(j2.error || '查询失败'); return; }
-                      if (j2.status === 'done') { clearInterval(itv); onOk(j2.url); }
+                      if (j2.status === 'done') {
+                        clearInterval(itv);
+                        // 把长链 hash_数字.ext 转成短链 hash.ext
+                        var imgUrl = (j2.url || '').replace(/_\d+(\.[^.?]+)$/, '$1');
+                        onOk(imgUrl);
+                      }
                       else if (j2.status === 'error') { clearInterval(itv); onErr(j2.error || '生成失败'); }
                       // pending: 继续等
                     } catch(e) {}
@@ -3796,14 +3917,16 @@
         });
       }
 
-      // 图生视频：多图 + 提示词 → 提交到 relay，relay 后台调 GW 并轮询，返回 local task_id
+      // 图生视频：多图 + 提示词 → 直接提交到 relay（image_urls 支持多图数组）
       function coSubmitVideo(prompt, imageUrls, modelIdx, onOk, onErr) {
         var apiKey = GM_getValue(CO_KEY, '');
         if (!apiKey) { onErr('未配置 API Key'); return; }
         var vm = VID_MODELS[modelIdx % VID_MODELS.length];
         var urls = imageUrls.map(function(u) { return u + (u.indexOf('?') >= 0 ? '&' : '?') + SRC_TAG; });
+        var endpoint = RELAY + '/video/submit';
+        coLog('▶ coSubmitVideo model=' + vm.id + ' imageUrls=' + urls.length + ' url[0]=' + (urls[0]||'').slice(0,60));
         GM_xmlhttpRequest({
-          method: 'POST', url: RELAY + '/video/submit',
+          method: 'POST', url: endpoint,
           headers: { 'Content-Type': 'application/json' },
           data: JSON.stringify({ _api_key: apiKey, model: vm.id, prompt: prompt, video_time: vm.time, aspect_ratio: '1:1', resolution: vm.res, image_urls: urls }),
           timeout: 35000,
@@ -3844,15 +3967,16 @@
       // 在当前页用隐藏 iframe 完成焦点图替换 + 加标签 + 保存
       function coDoConfirmInPage(imgUrl, articleId, onDone) {
         var editUrl = 'http://youhui.bgm.smzdm.com/edit_youhui/' + articleId;
-        var iframe = document.createElement('iframe');
-        iframe.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;visibility:hidden;';
-        iframe.src = editUrl;
-        document.body.appendChild(iframe);
-        var timeout = setTimeout(function () {
-          document.body.removeChild(iframe);
-          onDone(false, 'iframe 超时');
-        }, 60000);
-        iframe.onload = function () {
+        var iframe = (function() {
+          var fr = document.createElement('iframe');
+          fr.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;visibility:hidden;';
+          fr.src = editUrl;
+          document.body.appendChild(fr);
+          return fr;
+        })();
+        function removeIframe() { try { if (document.body.contains(iframe)) document.body.removeChild(iframe); } catch(e) {} }
+        var timeout = setTimeout(function () { removeIframe(); onDone(false, 'iframe 超时'); }, 60000);
+        function doWork() {
           try {
             var doc = iframe.contentDocument || iframe.contentWindow.document;
             function setV(el, val) {
@@ -3861,16 +3985,46 @@
               el.dispatchEvent(new iframe.contentWindow.Event('input', { bubbles: true }));
               el.dispatchEvent(new iframe.contentWindow.Event('change', { bubbles: true }));
             }
-            // 1. 填焦点图
-            var focusInput = doc.querySelector('[name="article_pic_url"]');
-            if (focusInput) {
-              setV(focusInput, imgUrl);
-              var container = focusInput.closest('tr') || (focusInput.parentElement && focusInput.parentElement.parentElement);
-              if (container) {
-                var fBtns = container.querySelectorAll('button, input[type="button"]');
-                for (var i = 0; i < fBtns.length; i++) {
-                  if ((fBtns[i].textContent.trim() === '获取' || fBtns[i].value === '获取') && fBtns[i].offsetParent !== null) {
-                    fBtns[i].click(); break;
+            // 1. 填上传框 → 点上传 → 点"设为焦点图"
+            function findUploadPair(d) {
+              var btns = d.querySelectorAll('button, input[type="button"]');
+              for (var bi = 0; bi < btns.length; bi++) {
+                var bt = (btns[bi].textContent || btns[bi].value || '').trim();
+                if (bt === '上传') {
+                  var row = btns[bi].closest('tr') || btns[bi].parentElement;
+                  if (row) { var inp = row.querySelector('input[type="text"]'); if (inp) return { input: inp, uploadBtn: btns[bi] }; }
+                }
+              }
+              return null;
+            }
+            function findSetFocusBtn(d) {
+              var btns = d.querySelectorAll('button, input[type="button"]');
+              for (var bi = 0; bi < btns.length; bi++) {
+                if ((btns[bi].textContent || btns[bi].value || '').trim() === '设为焦点图') return btns[bi];
+              }
+              return null;
+            }
+            var uploadPair = findUploadPair(doc);
+            if (uploadPair) {
+              setV(uploadPair.input, imgUrl);
+              setTimeout(function () {
+                try { uploadPair.uploadBtn.click(); } catch(e) {}
+                setTimeout(function () {
+                  try { var fb = findSetFocusBtn(doc); if (fb) fb.click(); } catch(e) {}
+                }, 1200);
+              }, 400);
+            } else {
+              // fallback: 直接填焦点图字段
+              var focusInput = doc.querySelector('[name="article_pic_url"]');
+              if (focusInput) {
+                setV(focusInput, imgUrl);
+                var container = focusInput.closest('tr') || (focusInput.parentElement && focusInput.parentElement.parentElement);
+                if (container) {
+                  var fBtns = container.querySelectorAll('button, input[type="button"]');
+                  for (var i = 0; i < fBtns.length; i++) {
+                    if ((fBtns[i].textContent.trim() === '获取' || fBtns[i].value === '获取') && fBtns[i].offsetParent !== null) {
+                      fBtns[i].click(); break;
+                    }
                   }
                 }
               }
@@ -3894,21 +4048,20 @@
                     var bodyText = doc.body.innerText || '';
                     if (bodyText.indexOf('保存成功') >= 0) {
                       clearInterval(itv); clearTimeout(timeout);
-                      document.body.removeChild(iframe);
+                      removeIframe();
                       onDone(true, '保存成功');
                       return;
                     }
                     if (tries++ > 12) {
                       if (!reloaded) {
-                        // 无反应：移除当前 iframe，重新整体执行一次
                         reloaded = true;
                         clearInterval(itv); clearTimeout(timeout);
-                        try { document.body.removeChild(iframe); } catch(e2) {}
+                        removeIframe();
                         coDoConfirmInPage(imgUrl, articleId, onDone);
                         return;
                       }
                       clearInterval(itv); clearTimeout(timeout);
-                      document.body.removeChild(iframe);
+                      removeIframe();
                       onDone(false, '保存超时');
                       return;
                     }
@@ -3975,10 +4128,11 @@
             }, 600);
           } catch(e) {
             clearTimeout(timeout);
-            try { document.body.removeChild(iframe); } catch(e2) {}
+            removeIframe();
             onDone(false, e.message);
           }
-        };
+        }
+          iframe.onload = doWork;
       }
 
       // 解析模型输出的 4 条提示词：只取以 1/2/3/4 编号开头的行，过滤注意事项等非提示词内容
@@ -4036,18 +4190,13 @@
           + '<input id="tuopin-co-scene" type="text" placeholder="如：露营、聚会" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
           + '</div>'
           + '<button id="tuopin-co-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;margin-bottom:8px;">优化头图</button>'
-          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">参考图</div>'
+          + '<div style="color:#999;font-size:10px;margin-bottom:4px;">参考图 <span style="color:#bbb;">（勾选后作为图生图参考）</span></div>'
           + '<div id="tuopin-co-refimg-area" style="border:1px dashed #ddd;border-radius:6px;padding:6px;margin-bottom:8px;background:#fafafa;">'
-          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">'
-          + '<img id="tuopin-co-refimg-preview" src="" style="width:48px;height:48px;object-fit:cover;border-radius:4px;border:1px solid #eee;display:none;">'
-          + '<div id="tuopin-co-refimg-empty" style="width:48px;height:48px;border-radius:4px;border:1px dashed #ccc;display:flex;align-items:center;justify-content:center;color:#ccc;font-size:18px;flex-shrink:0;">+</div>'
-          + '<div style="flex:1;min-width:0;">'
-          + '<input id="tuopin-co-refimg-url" type="text" placeholder="粘贴图片URL" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;margin-bottom:4px;">'
-          + '<div style="display:flex;gap:4px;">'
-          + '<label id="tuopin-co-refimg-upload-label" style="flex:1;padding:3px 6px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:11px;color:#666;cursor:pointer;text-align:center;">本地上传<input id="tuopin-co-refimg-file" type="file" accept="image/*" style="display:none;"></label>'
-          + '<button id="tuopin-co-refimg-reset" style="flex:1;padding:3px 6px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:11px;color:#666;cursor:pointer;">重置文章图</button>'
-          + '</div></div></div>'
-          + '<div id="tuopin-co-refimg-tip" style="font-size:10px;color:#aaa;margin-top:2px;word-break:break-all;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>'
+          + '<div id="tuopin-co-refimg-grid" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:5px;"></div>'
+          + '<div style="display:flex;gap:4px;margin-top:4px;">'
+          + '<label style="flex:1;padding:3px 6px;background:#fff;border:1px solid #ddd;border-radius:4px;font-size:11px;color:#666;cursor:pointer;text-align:center;">本地上传<input id="tuopin-co-refimg-file" type="file" accept="image/*" multiple style="display:none;"></label>'
+          + '<input id="tuopin-co-refimg-url" type="text" placeholder="粘贴图片URL后回车" style="flex:2;padding:3px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '</div>'
           + '</div>'
           + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">'
           + '<div style="color:#999;font-size:10px;">图生图</div>'
@@ -4784,9 +4933,98 @@
           var btn = e.target && e.target.classList.contains('co-set-refimg') ? e.target : null;
           if (btn) {
             var url = btn.getAttribute('data-url');
-            if (url) { coRefImgSet(url, '来自图生图'); }
+            if (url) { coRefImgAddUrl(url); }
           }
         });
+        // 图片加载后显示真实宽高比（如 "1:1 · 镜头2"）
+        function coUpdateImgRatio(container, shotIdx) {
+          var imgEl = container.querySelector('img');
+          var lblEl = container.querySelector('.co-img-lbl');
+          if (!imgEl || !lblEl) return;
+          function setRatio() {
+            var w = imgEl.naturalWidth, h = imgEl.naturalHeight;
+            if (!w || !h) return;
+            function gcd(a, b) { return b ? gcd(b, a % b) : a; }
+            var g = gcd(w, h);
+            lblEl.textContent = (w / g) + ':' + (h / g) + ' · 镜头' + shotIdx;
+          }
+          if (imgEl.complete && imgEl.naturalWidth) { setRatio(); }
+          else { imgEl.addEventListener('load', setRatio); }
+        }
+
+        // 视频生成核心逻辑（供"用于视频生成"按钮和"确认视频图"按钮共用）
+        function coDoVideoGen(selectedUrls) {
+          coLog('▶ coDoVideoGen selectedUrls=' + selectedUrls.length + ' url[0]=' + (selectedUrls[0]||'').slice(0,60));
+          var vidBox = document.getElementById('tuopin-co-videos');
+          if (!vidBox) { coLog('✗ 找不到视频容器'); return; }
+          var vidPrompts = [];
+          for (var _vi = 0; _vi < 2; _vi++) {
+            var _vta = document.getElementById('co-prompt-' + _vi);
+            if (_vta && _vta.value.trim()) vidPrompts.push(_vta.value.trim());
+          }
+          if (!vidPrompts.length) vidPrompts = ['电影切镜，多镜头合并，动态流畅，不改变商品形态'];
+          if (vidPrompts.length < 2) vidPrompts.push(vidPrompts[0]);
+          // 每条提示词末尾强制追加不改变商品外观约束
+          vidPrompts = vidPrompts.map(function(p) {
+            return p.replace(/[，,。.]*不改变商品形态[^，,。.]*/, '').replace(/，+$/, '') + '，不改变商品外观形态，镜头运动流畅自然';
+          });
+          var vidBtn = document.getElementById('tuopin-co-confirm-vid-btn');
+          if (vidBtn) { vidBtn.disabled = true; vidBtn.textContent = '⏳ 提交中...'; }
+          coLog('▶ 提交视频 (' + selectedUrls.length + ' 张图, ' + VID_MODELS.length + ' 个模型)');
+          vidBox.innerHTML = '';
+          var savedVids = [], vidDoneCount = 0;
+          VID_MODELS.forEach(function(vm, vi) {
+            var vc2 = document.createElement('div');
+            vc2.style.cssText = 'border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
+            vc2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">' + vm.name + ' 生成中...</div>';
+            vidBox.appendChild(vc2);
+            var vPrompt = vidPrompts[vi % vidPrompts.length];
+            (function(vi, vc2, vm, vPrompt) {
+              coSubmitVideo(vPrompt, selectedUrls, vi,
+                function(taskId, modelId) {
+                  coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
+                  try {
+                    var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                    var pts = (cur.pendingTasks || []).filter(function(p) { return p.idx !== vi; });
+                    pts.push({ idx: vi, taskId: taskId, modelId: modelId });
+                    cur.pendingTasks = pts;
+                    GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
+                  } catch(e) {}
+                  coPollVideo(taskId, modelId,
+                    function(vurl) {
+                      vc2.style.position = 'relative';
+                      vc2.setAttribute('data-co-url', vurl);
+                      vc2.innerHTML = coVidCardHtml(vurl, vm.name + ' · ' + selectedUrls.length + '张合并');
+                      coBindCopy(vc2); coUpdateConfirmBtn();
+                      savedVids.push(vurl); vidDoneCount++;
+                      if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                      try {
+                        var cur2 = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
+                        cur2.pendingTasks = (cur2.pendingTasks || []).filter(function(p) { return p.taskId !== taskId; });
+                        cur2.videos = savedVids.slice();
+                        GM_setValue(CO_SESSION_KEY, JSON.stringify(cur2));
+                      } catch(e) {}
+                      coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 完成');
+                    },
+                    function(err) {
+                      vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' ' + err + '</div>';
+                      vidDoneCount++;
+                      if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                      coLog('✗ 视频' + (vi + 1) + ' ' + err);
+                    }
+                  );
+                },
+                function(err) {
+                  vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' 提交失败 ' + err + '</div>';
+                  vidDoneCount++;
+                  if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
+                  coLog('✗ 视频' + (vi + 1) + ' 提交失败 ' + err);
+                }
+              );
+            })(vi, vc2, vm, vPrompt);
+          });
+        }
+
         // 图片/视频操作按钮（用于焦点图/视频生成/视频焦点图）
         panel.addEventListener('click', function (e) {
           var t = e.target;
@@ -4803,8 +5041,12 @@
             imgUrl = singleChecked[0].getAttribute('data-url');
           }
           if (isVideoBtn) {
-            coRefImgSet(imgUrl, '来自图生图');
-            coLog('✓ 已设为视频参考图: ' + imgUrl.slice(0, 60));
+            // 收集所有勾选图；没有勾选时只用当前这张
+            var videoChecked = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
+            var videoUrls = videoChecked.length
+              ? Array.prototype.map.call(videoChecked, function(cb) { return cb.getAttribute('data-url'); })
+              : [imgUrl];
+            coDoVideoGen(videoUrls);
             return;
           }
           // 用于焦点图 / 设置为焦点图
@@ -4872,85 +5114,9 @@
           if (tid === 'tuopin-co-confirm-vid-btn') {
             var checkedImgs = panel.querySelectorAll('#tuopin-co-images .co-select-cb:checked');
             if (!checkedImgs.length) { alert('请先在图生图区域勾选要合并成视频的图片'); return; }
-            var panel2 = document.getElementById('tuopin-co-panel');
-            var vidBox = document.getElementById('tuopin-co-videos');
-            if (!vidBox) { coLog('✗ 找不到视频容器'); return; }
-            var allCards = Array.from(panel2.querySelectorAll('#tuopin-co-images [data-co-url]'));
             var selectedUrls = [];
             checkedImgs.forEach(function (cb) { selectedUrls.push(cb.getAttribute('data-url')); });
-
-            // 读两条视频提示词
-            var vidPrompts = [];
-            for (var vi = 0; vi < 2; vi++) {
-              var vta = document.getElementById('co-prompt-' + vi);
-              if (vta && vta.value.trim()) vidPrompts.push(vta.value.trim());
-            }
-            if (!vidPrompts.length) vidPrompts = ['电影切镜，多镜头合并，动态流畅，不改变商品形态'];
-            if (vidPrompts.length < 2) vidPrompts.push(vidPrompts[0]);
-
-            // 锁定按钮防重复点击
-            var vidBtn = document.getElementById('tuopin-co-confirm-vid-btn');
-            if (vidBtn) { vidBtn.disabled = true; vidBtn.textContent = '⏳ 提交中...'; }
-            coLog('▶ 提交合并视频 (' + selectedUrls.length + ' 张图, ' + VID_MODELS.length + ' 个模型)');
-
-            vidBox.innerHTML = '';
-            var savedVids = [];
-            var vidDoneCount = 0;
-            // 并行提交两条视频，各用一个模型
-            VID_MODELS.forEach(function (vm, vi) {
-              var vc2 = document.createElement('div');
-              vc2.style.cssText = 'border:1px solid #eee;border-radius:6px;padding:4px;font-size:10px;';
-              vc2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">' + vm.name + ' 生成中...</div>';
-              vidBox.appendChild(vc2);
-
-              var vPrompt = vidPrompts[vi % vidPrompts.length];
-              (function(vi, vc2, vm, vPrompt) {
-                coSubmitVideo(vPrompt, selectedUrls, vi,
-                  function (taskId, modelId) {
-                    coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 已提交, taskId=' + taskId);
-                    try {
-                      var cur = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
-                      var pts = cur.pendingTasks || [];
-                      pts = pts.filter(function(p) { return p.idx !== vi; });
-                      pts.push({ idx: vi, taskId: taskId, modelId: modelId });
-                      cur.pendingTasks = pts;
-                      GM_setValue(CO_SESSION_KEY, JSON.stringify(cur));
-                    } catch(e) {}
-                    coPollVideo(taskId, modelId,
-                      function (vurl) {
-                        vc2.style.position = 'relative';
-                        vc2.setAttribute('data-co-url', vurl);
-                        vc2.innerHTML = coVidCardHtml(vurl, vm.name + ' · ' + selectedUrls.length + '张合并');
-                        coBindCopy(vc2);
-                        coUpdateConfirmBtn();
-                        savedVids.push(vurl);
-                        vidDoneCount++;
-                        if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
-                        try {
-                          var cur2 = JSON.parse(GM_getValue(CO_SESSION_KEY, '{}'));
-                          cur2.pendingTasks = (cur2.pendingTasks || []).filter(function(p) { return p.taskId !== taskId; });
-                          cur2.videos = savedVids.slice();
-                          GM_setValue(CO_SESSION_KEY, JSON.stringify(cur2));
-                        } catch(e) {}
-                        coLog('✓ 视频' + (vi + 1) + '(' + vm.name + ') 完成');
-                      },
-                      function (err) {
-                        vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' ' + err + '</div>';
-                        vidDoneCount++;
-                        if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
-                        coLog('✗ 视频' + (vi + 1) + ' ' + err);
-                      }
-                    );
-                  },
-                  function (err) {
-                    vc2.innerHTML = '<div style="color:#ff4d4f;text-align:center;padding:6px 0;font-size:10px;">✗ ' + vm.name + ' 提交失败 ' + err + '</div>';
-                    vidDoneCount++;
-                    if (vidBtn && vidDoneCount >= VID_MODELS.length) { vidBtn.disabled = false; vidBtn.textContent = '▶ 确认视频图'; }
-                    coLog('✗ 视频' + (vi + 1) + ' 提交失败 ' + err);
-                  }
-                );
-              })(vi, vc2, vm, vPrompt);
-            });
+            coDoVideoGen(selectedUrls);
           } else if (tid === 'tuopin-co-use-keyframe-btn') {
             var confirmVidBtn2 = document.getElementById('tuopin-co-confirm-vid-btn');
             if (confirmVidBtn2) confirmVidBtn2.click();
@@ -4971,10 +5137,10 @@
           var imgCards = imagesBox2 ? imagesBox2.children : [];
           var ic2 = imgCards[idx];
           if (!ic2) return;
-          var currentImg = coRefImgUrl || coGetArticleImage();
+          var currentImg = (coRefImgUrls.length ? coRefImgUrls[0] : '') || coGetArticleImage();
           ic2.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:8px 0;">图' + (idx + 1) + ' 重新生成中...</div>';
           coLog('↺ 重新生成图' + (idx + 1));
-          coCreateImg(prompt, currentImg, idx,
+          coCreateImg(prompt, coRefImgUrls.length ? coRefImgUrls : currentImg, idx,
             function (url) {
               coImgMeta[idx] = { prompt: prompt, url: url };
               ic2.setAttribute('data-co-url', url);
@@ -4982,13 +5148,14 @@
                 + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
                 + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:6px;right:6px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                 + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:4px;display:block;">'
-                + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (idx+1) + '</div>'
+                + '<div class="co-img-lbl" style="color:#bbb;font-size:9px;text-align:center;margin-bottom:3px;">镜头' + (idx+1) + '</div>'
                 + '<div style="display:flex;gap:3px;">'
                 + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:3px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:4px;cursor:pointer;font-size:10px;">复制</button>'
                 + '<a href="' + url + '" target="_blank" style="flex:1;padding:3px;text-align:center;background:#ff7a00;color:#fff;border-radius:4px;font-size:10px;text-decoration:none;">打开</a></div>'
                 ;
               ic2.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
               ic2.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
+              coUpdateImgRatio(ic2, idx + 1);
               coBindCopy(ic2);
               coUpdateConfirmBtn();
               coLog('✓ 图' + (idx + 1) + ' 重新生成完成');
@@ -5125,13 +5292,14 @@
                       + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
                       + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:4px;right:4px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                       + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
-                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[0] + ' · 镜头' + (t.idx+1) + '</div>'
+                      + '<div class="co-img-lbl" style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">镜头' + (t.idx+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
                       + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>'
                       ;
                     ic3.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
                     ic3.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
+                    coUpdateImgRatio(ic3, t.idx + 1);
                     coBindCopy(ic3);
                   }
                   coImgMeta[t.idx] = { prompt: t.prompt, url: url };
@@ -5212,40 +5380,90 @@
 
         // ── 参考图逻辑 ──
         var CO_REFIMG_KEY = 'tuopin_refimg_url';
-        var coRefImgUrl = ''; // 当前参考图（URL 或 dataURL）
+        var coRefImgUrls = []; // 选中的参考图列表（支持多张）
 
-        function coRefImgSet(url, tip) {
-          coRefImgUrl = url || '';
-          var preview = document.getElementById('tuopin-co-refimg-preview');
-          var empty = document.getElementById('tuopin-co-refimg-empty');
-          var tipEl = document.getElementById('tuopin-co-refimg-tip');
-          var urlInput = document.getElementById('tuopin-co-refimg-url');
-          if (coRefImgUrl) {
-            preview.src = coRefImgUrl;
-            preview.style.display = 'block';
-            empty.style.display = 'none';
-            if (urlInput && !coRefImgUrl.startsWith('data:')) urlInput.value = coRefImgUrl;
-          } else {
-            preview.src = '';
-            preview.style.display = 'none';
-            empty.style.display = 'flex';
-            if (urlInput) urlInput.value = '';
+        function coRefImgRenderGrid(imgs) {
+          var grid = document.getElementById('tuopin-co-refimg-grid');
+          if (!grid) return;
+          if (!imgs || !imgs.length) {
+            grid.innerHTML = '<div style="color:#bbb;font-size:11px;padding:4px;">正在加载后台图片...</div>';
+            return;
           }
-          if (tipEl) tipEl.textContent = tip || (coRefImgUrl ? (coRefImgUrl.startsWith('data:') ? '本地文件' : coRefImgUrl.slice(0, 80)) : '');
+          grid.innerHTML = '';
+          imgs.forEach(function(src) {
+            var wrap = document.createElement('label');
+            wrap.style.cssText = 'position:relative;cursor:pointer;width:52px;height:52px;flex-shrink:0;';
+            var cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'co-refimg-cb';
+            cb.setAttribute('data-src', src);
+            cb.style.cssText = 'position:absolute;top:3px;left:3px;z-index:2;width:13px;height:13px;accent-color:#ff7a00;';
+            var im = document.createElement('img');
+            im.src = src;
+            im.style.cssText = 'width:52px;height:52px;object-fit:cover;border-radius:4px;border:2px solid transparent;display:block;';
+            cb.addEventListener('change', function() {
+              im.style.borderColor = cb.checked ? '#ff7a00' : 'transparent';
+              var idx = coRefImgUrls.indexOf(src);
+              if (cb.checked && idx < 0) coRefImgUrls.push(src);
+              if (!cb.checked && idx >= 0) coRefImgUrls.splice(idx, 1);
+            });
+            wrap.appendChild(cb); wrap.appendChild(im);
+            grid.appendChild(wrap);
+          });
+          // 默认勾选第1张
+          if (imgs.length) {
+            var first = grid.querySelector('.co-refimg-cb');
+            if (first) { first.checked = true; first.dispatchEvent(new Event('change')); }
+          }
         }
 
-        // 默认取当前文章商品图（不持久化，每次打开都用当前文章图）
+        function coRefImgAddUrl(src) {
+          if (!src || coRefImgUrls.indexOf(src) >= 0) return;
+          var grid = document.getElementById('tuopin-co-refimg-grid');
+          if (!grid) return;
+          var wrap = document.createElement('label');
+          wrap.style.cssText = 'position:relative;cursor:pointer;width:52px;height:52px;flex-shrink:0;';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.className = 'co-refimg-cb';
+          cb.setAttribute('data-src', src); cb.checked = true;
+          cb.style.cssText = 'position:absolute;top:3px;left:3px;z-index:2;width:13px;height:13px;accent-color:#ff7a00;';
+          coRefImgUrls.push(src);
+          var im = document.createElement('img');
+          im.src = src;
+          im.style.cssText = 'width:52px;height:52px;object-fit:cover;border-radius:4px;border:2px solid #ff7a00;display:block;';
+          cb.addEventListener('change', function() {
+            im.style.borderColor = cb.checked ? '#ff7a00' : 'transparent';
+            var idx = coRefImgUrls.indexOf(src);
+            if (cb.checked && idx < 0) coRefImgUrls.push(src);
+            if (!cb.checked && idx >= 0) coRefImgUrls.splice(idx, 1);
+          });
+          wrap.appendChild(cb); wrap.appendChild(im);
+          grid.insertBefore(wrap, grid.firstChild);
+        }
+
+        // 初始化参考图（使用预取缓存，打开面板时已经拿到数据）
+        coRefImgRenderGrid([]);
         (function() {
-          var articleImg = coGetArticleImage();
-          coRefImgSet(articleImg, '（文章商品图）');
+          function onImgs(imgs) {
+            if (imgs && imgs.length) {
+              coRefImgRenderGrid(imgs);
+            } else {
+              var grid = document.getElementById('tuopin-co-refimg-grid');
+              if (grid) grid.innerHTML = '<div style="color:#bbb;font-size:11px;padding:4px;">未找到图片，请本地上传或粘贴URL</div>';
+            }
+          }
+          if (coRefImgCache !== null) { onImgs(coRefImgCache); }
+          else { coRefImgCacheCallbacks.push(onImgs); }
         })();
 
-        // 粘贴 URL 输入
+        // 粘贴 URL 输入（回车追加）
         var refUrlInput = document.getElementById('tuopin-co-refimg-url');
         if (refUrlInput) {
-          refUrlInput.addEventListener('change', function() {
-            var v = this.value.trim();
-            if (v) { coRefImgSet(v); }
+          refUrlInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+              var v = this.value.trim();
+              if (v) { coRefImgAddUrl(v); this.value = ''; }
+            }
           });
           // 支持粘贴图片（clipboard image）
           refUrlInput.addEventListener('paste', function(e) {
@@ -5256,7 +5474,7 @@
                 e.preventDefault();
                 var file = items[i].getAsFile();
                 var reader = new FileReader();
-                reader.onload = function(ev) { coRefImgSet(ev.target.result, '粘贴图片'); };
+                reader.onload = function(ev) { coRefImgAddUrl(ev.target.result); };
                 reader.readAsDataURL(file);
                 return;
               }
@@ -5264,24 +5482,22 @@
           });
         }
 
-        // 本地上传
+        // 本地上传（支持多文件）
         var refFileInput = document.getElementById('tuopin-co-refimg-file');
         if (refFileInput) {
           refFileInput.addEventListener('change', function() {
-            var file = this.files && this.files[0];
-            if (!file) return;
-            var reader = new FileReader();
-            reader.onload = function(ev) { coRefImgSet(ev.target.result, '本地：' + file.name); };
-            reader.readAsDataURL(file);
+            var files = this.files;
+            if (!files) return;
+            for (var fi = 0; fi < files.length; fi++) {
+              (function(file) {
+                var reader = new FileReader();
+                reader.onload = function(ev) { coRefImgAddUrl(ev.target.result); };
+                reader.readAsDataURL(file);
+              })(files[fi]);
+            }
+            this.value = '';
           });
         }
-
-        // 重置为文章图
-        var refResetBtn = document.getElementById('tuopin-co-refimg-reset');
-        if (refResetBtn) refResetBtn.onclick = function() {
-          var articleImg = coGetArticleImage();
-          coRefImgSet(articleImg, '（文章商品图）');
-        };
         // ── end 参考图 ──
 
         // ── 图生图模型切换 ──
@@ -5320,7 +5536,8 @@
           var apiKey = GM_getValue(CO_KEY, '');
           if (!apiKey) { alert('请先点右上 ⚙ Key 配置 gw-openapi 的 Bearer Key'); return; }
 
-          var img = coRefImgUrl || coGetArticleImage();
+          var img = (coRefImgUrls.length ? coRefImgUrls[0] : '') || coGetArticleImage();
+          var refImgs = coRefImgUrls.length ? coRefImgUrls : [img];
           var title = coGetArticleTitle();
           var promptsBox = document.getElementById('tuopin-co-prompts');
           var imagesBox = document.getElementById('tuopin-co-images');
@@ -5363,7 +5580,7 @@
               // 构建图片提示词（基于特写词+场景词，与视频提示词无关）
               var imgBaseCore = (closeup && scene) ? closeup + '，' + scene
                 : (closeup || scene);
-              var IMG_CONSTRAINT = '，画面中只出现这一张商品图片，严禁多格拼图、严禁分镜、严禁并排多张、输出单张完整画面，不要拼接图片，单张构图，不改变商品形态';
+              var IMG_CONSTRAINT = '，单张完整画面，不拼图，不改变商品形态，电影级摄影质感';
 
               var imgDone = 0, total = 6;
               var gotImgs = new Array(total);
@@ -5392,9 +5609,9 @@
                 ic.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">图' + (i + 1) + ' 生成中...</div>';
                 imagesBox.appendChild(ic);
                 // 记录进行中任务，刷新后可恢复
-                pendingImgs.push({ idx: i, prompt: imgBasePrompt, imgSrc: img, modelIdx: i });
+                pendingImgs.push({ idx: i, prompt: imgBasePrompt, imgSrc: refImgs[i % refImgs.length] || img, modelIdx: i });
                 persist();
-                coCreateImg(imgBasePrompt, img, i,
+                coCreateImg(imgBasePrompt, [refImgs[i % refImgs.length] || img], i,
                   function (url) {
                     gotImgs[i] = url;
                     removePendingImg(i);
@@ -5403,13 +5620,14 @@
                       + '<input type="checkbox" class="co-select-cb" data-url="' + url + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
                       + '<button class="co-set-refimg" data-url="' + url + '" title="设为参考图" style="position:absolute;top:4px;right:4px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
                       + '<img src="' + url + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
-                      + '<div style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">' + IMG_MODEL_NAMES[coImgModelIdx % IMG_MODEL_NAMES.length] + ' · 镜头' + (i+1) + '</div>'
+                      + '<div class="co-img-lbl" style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">镜头' + (i+1) + '</div>'
                       + '<div style="display:flex;gap:2px;">'
                       + '<button class="co-copy" data-url="' + url + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
                       + '<a href="' + url + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>'
                       ;
                     ic.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
                     ic.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
+                    coUpdateImgRatio(ic, i + 1);
                     coBindCopy(ic);
                     imgDone++; persist(); checkAll();
                     coLog('✓ 图' + (i + 1) + ' 完成');
@@ -5418,8 +5636,45 @@
                   },
                   function (err) {
                     removePendingImg(i);
-                    ic.querySelector('.co-gen').textContent = '✗ ' + err;
-                    ic.querySelector('.co-gen').style.color = '#ff4d4f';
+                    ic.innerHTML = '<div style="padding:4px 0;text-align:center;">'
+                      + '<div style="color:#ff4d4f;font-size:10px;margin-bottom:4px;">✗ ' + coEsc(err) + '</div>'
+                      + '<button class="co-img-retry" style="padding:2px 8px;background:#ff7a00;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">重试</button>'
+                      + '</div>';
+                    ic.querySelector('.co-img-retry').onclick = function() {
+                      ic.innerHTML = '<div class="co-gen" style="color:#999;text-align:center;padding:6px 0;font-size:10px;">图' + (i + 1) + ' 生成中...</div>';
+                      imgDone--;
+                      coCreateImg(imgBasePrompt, refImgs, i,
+                        function(url2) {
+                          gotImgs[i] = url2;
+                          removePendingImg(i);
+                          ic.setAttribute('data-co-url', url2);
+                          ic.innerHTML = '<label style="position:absolute;top:4px;left:4px;z-index:2;cursor:pointer;">'
+                            + '<input type="checkbox" class="co-select-cb" data-url="' + url2 + '" style="width:14px;height:14px;accent-color:#ff7a00;cursor:pointer;"></label>'
+                            + '<button class="co-set-refimg" data-url="' + url2 + '" title="设为参考图" style="position:absolute;top:4px;right:4px;z-index:2;padding:2px 5px;background:rgba(0,0,0,0.55);color:#fff;border:none;border-radius:3px;font-size:9px;cursor:pointer;display:none;">参考图</button>'
+                            + '<img src="' + url2 + '" style="width:100%;border-radius:4px;margin-bottom:3px;display:block;">'
+                            + '<div class="co-img-lbl" style="color:#bbb;font-size:9px;text-align:center;margin-bottom:2px;">镜头' + (i+1) + '</div>'
+                            + '<div style="display:flex;gap:2px;">'
+                            + '<button class="co-copy" data-url="' + url2 + '" style="flex:1;padding:2px;background:#f0f7ff;color:#1890ff;border:1px solid #91d5ff;border-radius:3px;cursor:pointer;font-size:9px;">复制</button>'
+                            + '<a href="' + url2 + '" target="_blank" style="flex:1;padding:2px;text-align:center;background:#ff7a00;color:#fff;border-radius:3px;font-size:9px;text-decoration:none;">打开</a></div>';
+                          ic.onmouseenter = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'block'; };
+                          ic.onmouseleave = function() { var b = this.querySelector('.co-set-refimg'); if (b) b.style.display = 'none'; };
+                          coUpdateImgRatio(ic, i + 1);
+                          coBindCopy(ic);
+                          imgDone++; persist(); checkAll();
+                          coLog('✓ 图' + (i + 1) + ' 重试成功');
+                          coImgMeta[i] = { prompt: imgBasePrompt, url: url2 };
+                          coUpdateConfirmBtn();
+                        },
+                        function(err2) {
+                          ic.innerHTML = '<div style="padding:4px 0;text-align:center;">'
+                            + '<div style="color:#ff4d4f;font-size:10px;margin-bottom:4px;">✗ ' + coEsc(err2) + '</div>'
+                            + '<button class="co-img-retry" style="padding:2px 8px;background:#ff7a00;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:10px;">重试</button>'
+                            + '</div>';
+                          ic.querySelector('.co-img-retry').onclick = arguments.callee.caller; // re-bind handled by event
+                          imgDone++; persist(); checkAll();
+                        }
+                      );
+                    };
                     coLog('✗ 图' + (i + 1) + ' ' + err);
                     imgDone++; persist(); checkAll();
                   }
