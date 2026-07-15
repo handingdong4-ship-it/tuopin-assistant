@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.2.2
+// @version      4.2.5
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -3355,7 +3355,7 @@
       var MINDPAD = 'https://mindpad-bgm.smzdm.com';
       var GW = 'https://gw-openapi-bgm.smzdm.com';
       var SUPERSET = 'https://bi-superset-bgm.smzdm.com';
-      var SUPERSET_DB = 406;
+      var SUPERSET_DB = 406; // 默认值，运行时从 relay 按登录名覆盖
       var IMG_MODELS = [
         'img_1_2_20250922_v3',   // 即梦图片编辑 5.0
         'img_7_2_20260114_v1'    // GPT Image 1.5
@@ -4228,7 +4228,22 @@
           + '<div id="co-tab-sales" style="display:' + (coActiveTab==='sales' ? 'block' : 'none') + ';">'
           + '<div id="co-sales-content" style="font-size:11px;color:#666;">'
           + '<div style="text-align:center;color:#bbb;padding:20px 0;">加载中...</div>'
-          + '</div></div>'
+          + '</div>'
+          + '<div id="co-sales-admin-panel" style="display:none;margin-top:10px;border-top:1px solid #f0f0f0;padding-top:8px;">'
+          + '<div style="font-weight:600;color:#ff7a00;font-size:11px;margin-bottom:6px;">Superset DB ID 管理</div>'
+          + '<div id="co-sales-dbids-display" style="background:#f5f5f5;border:1px solid #eee;border-radius:4px;padding:4px 6px;font-size:10px;color:#555;min-height:22px;margin-bottom:6px;line-height:1.8;"></div>'
+          + '<div style="display:flex;gap:4px;margin-bottom:4px;">'
+          + '<input id="co-sales-dbids-name" type="text" placeholder="用户名" style="flex:1;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '<input id="co-sales-dbids-id" type="text" placeholder="database_id" style="width:80px;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;">'
+          + '<button id="co-sales-dbids-add" style="padding:3px 8px;background:#52c41a;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;">添加</button>'
+          + '</div>'
+          + '<div style="display:flex;gap:4px;">'
+          + '<select id="co-sales-dbids-del-sel" style="flex:1;padding:3px 5px;border:1px solid #ddd;border-radius:4px;font-size:11px;"></select>'
+          + '<button id="co-sales-dbids-del" style="padding:3px 8px;background:#ff4d4f;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;">删除</button>'
+          + '</div>'
+          + '<div id="co-sales-dbids-log" style="font-size:10px;color:#52c41a;margin-top:4px;"></div>'
+          + '</div>'
+          + '</div>'
           // ── 代码植入 tab ──
           + '<div id="co-tab-inject" style="display:' + (coActiveTab==='inject' ? 'block' : 'none') + ';">'
           + '<textarea id="tuopin-inject-code" rows="7" style="width:100%;padding:5px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;" placeholder="粘贴要植入的 HTML 代码"></textarea>'
@@ -4352,35 +4367,67 @@
                   }
                 });
               }
-              // 从 relay 拉最新白名单，更新本地后再决定是否显示任务 tab
-              GM_xmlhttpRequest({
-                method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
-                onload: function(wr) {
-                  var taskWhitelist = [];
-                  try {
-                    var wd = JSON.parse(wr.responseText || '{}');
-                    taskWhitelist = wd.whitelist || [];
-                    GM_setValue('tuopin_task_whitelist', JSON.stringify(taskWhitelist));
-                  } catch(e) {
-                    try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e2) {}
-                  }
-                  var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
-                  if (canSeeTask) {
-                    var taskTabBtn = document.getElementById('co-tab-btn-task');
-                    if (taskTabBtn) taskTabBtn.style.display = '';
-                  }
-                },
-                onerror: function() {
-                  // relay 失败时 fallback 本地缓存
-                  var taskWhitelist = [];
-                  try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
-                  var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
-                  if (canSeeTask) {
-                    var taskTabBtn = document.getElementById('co-tab-btn-task');
-                    if (taskTabBtn) taskTabBtn.style.display = '';
-                  }
+              // 白名单和 dbids 每天最多从 relay 拉取一次，缓存到本地
+              var _today = coTodayStr();
+              function applyWhitelist(taskWhitelist) {
+                var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
+                if (canSeeTask) {
+                  var taskTabBtn = document.getElementById('co-tab-btn-task');
+                  if (taskTabBtn) taskTabBtn.style.display = '';
                 }
-              });
+              }
+              function applyDbids(dbids) {
+                if (dbids[loginName]) SUPERSET_DB = parseInt(dbids[loginName], 10);
+                if (loginName === 'handongxue') {
+                  var adminDbPanel = document.getElementById('co-sales-admin-panel');
+                  if (adminDbPanel) { adminDbPanel.style.display = 'block'; coDbidsRefresh(dbids); }
+                }
+              }
+              // 检查缓存日期，当天已拉过则直接用本地数据
+              var wlCache = {};
+              try { wlCache = JSON.parse(GM_getValue('tuopin_wl_cache', '{}')); } catch(e) {}
+              var dbCache = {};
+              try { dbCache = JSON.parse(GM_getValue('tuopin_dbids_cache', '{}')); } catch(e) {}
+
+              if (wlCache.date === _today) {
+                applyWhitelist(wlCache.list || []);
+              } else {
+                GM_xmlhttpRequest({
+                  method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
+                  onload: function(wr) {
+                    var taskWhitelist = [];
+                    try {
+                      var wd = JSON.parse(wr.responseText || '{}');
+                      taskWhitelist = wd.whitelist || [];
+                      GM_setValue('tuopin_wl_cache', JSON.stringify({ date: _today, list: taskWhitelist }));
+                    } catch(e) {
+                      taskWhitelist = (wlCache.list || []);
+                    }
+                    applyWhitelist(taskWhitelist);
+                  },
+                  onerror: function() { applyWhitelist(wlCache.list || []); }
+                });
+              }
+
+              if (dbCache.date === _today) {
+                applyDbids(dbCache.dbids || {});
+              } else {
+                GM_xmlhttpRequest({
+                  method: 'GET', url: RELAY + '/superset/dbids', timeout: 4000,
+                  onload: function(dr) {
+                    var dbids = {};
+                    try {
+                      var dd = JSON.parse(dr.responseText || '{}');
+                      dbids = dd.dbids || {};
+                      GM_setValue('tuopin_dbids_cache', JSON.stringify({ date: _today, dbids: dbids }));
+                    } catch(e) {
+                      dbids = (dbCache.dbids || {});
+                    }
+                    applyDbids(dbids);
+                  },
+                  onerror: function() { applyDbids(dbCache.dbids || {}); }
+                });
+              }
             } catch(e) {}
           },
           onerror: function() {}
@@ -4394,6 +4441,66 @@
           var body = document.getElementById('tuopin-co-body');
           if (body) body.style.display = now ? 'block' : 'none';
           coToggleBtn.textContent = now ? '▼' : '▶';
+        };
+
+        // ── Superset DB ID 管理（仅 handongxue 可见） ──
+        var _coDbids = {};
+        function coDbidsRefresh(dbids) {
+          _coDbids = dbids || {};
+          var display = document.getElementById('co-sales-dbids-display');
+          var delSel = document.getElementById('co-sales-dbids-del-sel');
+          if (display) {
+            var keys = Object.keys(_coDbids);
+            display.textContent = keys.length ? keys.map(function(k){ return k + ': ' + _coDbids[k]; }).join(' | ') : '暂无配置';
+          }
+          if (delSel) {
+            delSel.innerHTML = '';
+            Object.keys(_coDbids).forEach(function(k) {
+              var opt = document.createElement('option');
+              opt.value = k; opt.textContent = k + ' (' + _coDbids[k] + ')';
+              delSel.appendChild(opt);
+            });
+          }
+        }
+        function coDbidsSave(dbids, logMsg) {
+          var logEl = document.getElementById('co-sales-dbids-log');
+          GM_xmlhttpRequest({
+            method: 'POST', url: RELAY + '/superset/dbids',
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify({ who: 'handongxue', dbids: dbids }),
+            timeout: 6000,
+            onload: function(r) {
+              try {
+                var j = JSON.parse(r.responseText);
+                if (logEl) { logEl.textContent = j.ok ? (logMsg || '已保存') : ('失败: ' + (j.error||'')); }
+                if (j.ok) {
+                  GM_setValue('tuopin_dbids_cache', JSON.stringify({ date: coTodayStr(), dbids: dbids }));
+                  coDbidsRefresh(dbids);
+                }
+              } catch(e) { if (logEl) logEl.textContent = '解析失败'; }
+            },
+            onerror: function() { if (logEl) logEl.textContent = '请求失败'; }
+          });
+        }
+        var addBtn = document.getElementById('co-sales-dbids-add');
+        if (addBtn) addBtn.onclick = function() {
+          var name = (document.getElementById('co-sales-dbids-name').value || '').trim();
+          var id = parseInt((document.getElementById('co-sales-dbids-id').value || '').trim(), 10);
+          if (!name || !id) { var logEl = document.getElementById('co-sales-dbids-log'); if (logEl) logEl.textContent = '用户名和ID不能为空'; return; }
+          var newDbids = Object.assign({}, _coDbids);
+          newDbids[name] = id;
+          coDbidsSave(newDbids, '已添加 ' + name);
+          document.getElementById('co-sales-dbids-name').value = '';
+          document.getElementById('co-sales-dbids-id').value = '';
+        };
+        var delBtn = document.getElementById('co-sales-dbids-del');
+        if (delBtn) delBtn.onclick = function() {
+          var sel = document.getElementById('co-sales-dbids-del-sel');
+          var name = sel && sel.value;
+          if (!name) return;
+          var newDbids = Object.assign({}, _coDbids);
+          delete newDbids[name];
+          coDbidsSave(newDbids, '已删除 ' + name);
         };
 
         // ── 佣比查询（销售数据 tab 用） ──
@@ -4470,18 +4577,14 @@
               headers: { 'Content-Type': 'application/json', 'Referer': SUPERSET + '/sqllab/' },
               data: JSON.stringify({ database_id: SUPERSET_DB, schema: 'bi_app', sql: sql, json: true, runAsync: false, expand_data: true, queryLimit: 1000 }),
               withCredentials: true,
-              timeout: 30000,
+              timeout: 35000,
               onload: function(r) {
                 try {
                   var j = JSON.parse(r.responseText);
-                  console.log('[sales] status=' + r.status + ' keys=' + Object.keys(j).join(','));
-                  // Superset 报 SQL 错误时返回 {errors:[{message:...}]}
                   if (j.errors && j.errors.length) {
                     var msg = (j.errors[0] && j.errors[0].message) || '查询出错';
-                    console.log('[sales] sql err:', msg);
                     cb(msg.slice(0, 120)); return;
                   }
-                  // Superset 正常返回格式 {data:[...]} 或 {result:{data:[...]}}
                   var rows = j.data || (j.result && j.result.data) || j.result || j.results || null;
                   cb(null, { data: rows, _raw: j });
                 } catch(e) { cb('解析失败: ' + e.message); }
@@ -5018,7 +5121,10 @@
                 var res = JSON.parse(r.responseText || '{}');
                 if (logEl) logEl.style.color = res.ok ? '#52c41a' : '#ff4d4f';
                 if (logEl) logEl.textContent = res.ok ? ('✓ 已同步，共 ' + names.length + ' 个用户') : ('✗ ' + (res.error || '失败'));
-                if (res.ok && cb) cb(names);
+                if (res.ok && cb) {
+                  GM_setValue('tuopin_wl_cache', JSON.stringify({ date: coTodayStr(), list: names }));
+                  cb(names);
+                }
               } catch(e) { if (logEl) logEl.textContent = '✗ 解析失败'; }
             },
             onerror: function() { if (logEl) { logEl.style.color='#ff4d4f'; logEl.textContent = '✗ 网络错误'; } }
