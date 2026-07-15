@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.1.9
+// @version      4.2.1
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4355,7 +4355,7 @@
               // 检查权限名单（管理员自己也在名单内自动可见任务 tab）
               var taskWhitelist = [];
               try { taskWhitelist = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
-              var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
+              var canSeeTask = taskWhitelist.indexOf(loginName) >= 0;
               if (canSeeTask) {
                 var taskTabBtn = document.getElementById('co-tab-btn-task');
                 if (taskTabBtn) taskTabBtn.style.display = '';
@@ -4497,7 +4497,7 @@
           supersetQuery(sql1, function(err1, r1) {
             if (err1) console.log('[sales] sql1 err:', err1);
             var row = (!err1 && r1 && r1.data && r1.data[0]) ? r1.data[0] : null;
-            try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {}
+            if (row) { try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {} }
             renderAll(row);
           });
 
