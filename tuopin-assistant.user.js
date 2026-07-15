@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.0.8
+// @version      4.1.9
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -30,6 +30,7 @@
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
 // @connect      commission-bgm.agentdevops.zdm.net
+// @connect      bi-superset-bgm.smzdm.com
 // @connect      youhui.bgm.smzdm.com
 // @connect      sso-bgm.smzdm.com
 // @connect      10.45.148.12
@@ -3353,6 +3354,8 @@
       var coImgMeta = [];
       var MINDPAD = 'https://mindpad-bgm.smzdm.com';
       var GW = 'https://gw-openapi-bgm.smzdm.com';
+      var SUPERSET = 'https://bi-superset-bgm.smzdm.com';
+      var SUPERSET_DB = 406;
       var IMG_MODELS = [
         'img_1_2_20250922_v3',   // 即梦图片编辑 5.0
         'img_7_2_20260114_v1'    // GPT Image 1.5
@@ -4173,6 +4176,7 @@
           + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
           + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
+          + '<button id="co-tab-btn-sales" style="' + tabStyle('sales') + '">销售数据</button>'
           + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
           + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
           + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
@@ -4220,6 +4224,11 @@
           + '<div id="tuopin-co-log" style="max-height:90px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:6px;font-size:11px;line-height:1.5;color:#666;"></div>'
           + '<div id="tuopin-co-history" style="margin-top:8px;border-top:1px solid #eee;padding-top:6px;"></div>'
           + '</div>'
+          // ── 销售数据 tab ──
+          + '<div id="co-tab-sales" style="display:' + (coActiveTab==='sales' ? 'block' : 'none') + ';">'
+          + '<div id="co-sales-content" style="font-size:11px;color:#666;">'
+          + '<div style="text-align:center;color:#bbb;padding:20px 0;">加载中...</div>'
+          + '</div></div>'
           // ── 代码植入 tab ──
           + '<div id="co-tab-inject" style="display:' + (coActiveTab==='inject' ? 'block' : 'none') + ';">'
           + '<textarea id="tuopin-inject-code" rows="7" style="width:100%;padding:5px;border:1px solid #ddd;border-radius:4px;font-size:10px;box-sizing:border-box;resize:vertical;font-family:monospace;" placeholder="粘贴要植入的 HTML 代码"></textarea>'
@@ -4366,10 +4375,188 @@
           coToggleBtn.textContent = now ? '▼' : '▶';
         };
 
+        // ── 佣比查询（销售数据 tab 用） ──
+        function coQuerySalesCommission() {
+          var rateEl = document.getElementById('co-sales-comm-rate');
+          var calcEl = document.getElementById('co-sales-comm-calc');
+          if (!rateEl) return;
+          // 先从页面取商品直达链接
+          GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://youhui.bgm.smzdm.com/youhui_action/ajax_get_article_detail',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+            data: 'article_id=' + CO_ARTICLE_ID + '&channel_id=1',
+            timeout: 10000,
+            onload: function(r) {
+              var productUrl = '';
+              try {
+                var d = JSON.parse(r.responseText);
+                productUrl = d.article_clean_link || d.article_direct_link || '';
+              } catch(e) {}
+              if (!productUrl) {
+                if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; }
+                return;
+              }
+              GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+                timeout: 15000,
+                onload: function(resp) {
+                  try {
+                    var data = JSON.parse(resp.responseText || '{}');
+                    if (!data.ok) { rateEl.textContent = '-'; rateEl.style.color = '#999'; return; }
+                    var ratioNum = parseFloat(data.ratioPC);
+                    var ratioPct = isNaN(ratioNum) ? '' : (ratioNum * 100).toFixed(2);
+                    rateEl.textContent = ratioPct ? (ratioPct + '%') : '-';
+                    rateEl.style.color = ratioPct ? '#1890ff' : '#999';
+                    if (calcEl) { calcEl.textContent = '-'; calcEl.style.color = '#999'; }
+                  } catch(e) { rateEl.textContent = '解析失败'; rateEl.style.color = '#ff4d4f'; }
+                },
+                onerror: function() { rateEl.textContent = '查询失败'; rateEl.style.color = '#ff4d4f'; },
+                ontimeout: function() { rateEl.textContent = '查询超时'; rateEl.style.color = '#ff4d4f'; }
+              });
+            },
+            onerror: function() { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } }
+          });
+        }
+
+        // ── 销售数据查询（Superset） ──
+        var _salesLoaded = false;
+        var SALES_CACHE_KEY = 'tuopin_sales_' + CO_ARTICLE_ID;
+        var SALES_CACHE_TTL = 30 * 60 * 1000; // 30 分钟
+        function coLoadSalesData(force) {
+          var box = document.getElementById('co-sales-content');
+          if (!box) return;
+
+          // 读缓存：非强制刷新时先渲染缓存，再静默后台刷新
+          if (!force) {
+            try {
+              var cached = JSON.parse(GM_getValue(SALES_CACHE_KEY, 'null'));
+              if (cached && (Date.now() - cached.ts) < SALES_CACHE_TTL) {
+                renderAll(cached.row);
+                return;
+              }
+            } catch(e) {}
+          }
+
+          if (_salesLoaded && !force) return;
+          box.innerHTML = '<div style="text-align:center;color:#bbb;padding:20px 0;">查询中...</div>';
+
+          function supersetQuery(sql, cb) {
+            GM_xmlhttpRequest({
+              method: 'POST',
+              url: SUPERSET + '/api/v1/sqllab/execute/',
+              headers: { 'Content-Type': 'application/json', 'Referer': SUPERSET + '/sqllab/' },
+              data: JSON.stringify({ database_id: SUPERSET_DB, schema: 'bi_app', sql: sql, json: true, runAsync: false, expand_data: true, queryLimit: 1000 }),
+              withCredentials: true,
+              timeout: 30000,
+              onload: function(r) {
+                try {
+                  var j = JSON.parse(r.responseText);
+                  console.log('[sales] status=' + r.status + ' keys=' + Object.keys(j).join(','));
+                  // Superset 报 SQL 错误时返回 {errors:[{message:...}]}
+                  if (j.errors && j.errors.length) {
+                    var msg = (j.errors[0] && j.errors[0].message) || '查询出错';
+                    console.log('[sales] sql err:', msg);
+                    cb(msg.slice(0, 120)); return;
+                  }
+                  // Superset 正常返回格式 {data:[...]} 或 {result:{data:[...]}}
+                  var rows = j.data || (j.result && j.result.data) || j.result || j.results || null;
+                  cb(null, { data: rows, _raw: j });
+                } catch(e) { cb('解析失败: ' + e.message); }
+              },
+              onerror: function(e) { console.log('[sales] onerror', e); cb('请求失败'); },
+              ontimeout: function() { cb('超时'); }
+            });
+          }
+
+          var articleId = CO_ARTICLE_ID;
+          // SQL1: 当前文章归因数据 + 近2日映射GMV/CPS（article_id 是 String 类型，需加引号）
+          var sql1 = 'SELECT'
+            + ' ROUND(a.gmv) AS map_gmv,'
+            + ' ROUND(a.cps) AS map_cps,'
+            + ' ROUND(a.order_num) AS map_order_num,'
+            + ' ROUND(b.ascribe_gmv) AS ascribe_gmv,'
+            + ' ROUND(b.ascribe_cps) AS ascribe_cps,'
+            + ' ROUND(b.ascribe_order) AS ascribe_order,'
+            + ' b.youhui_shop_name'
+            + ' FROM ('
+            + '   SELECT ascribe_gmv, ascribe_cps, ascribe_order, marketing_id, youhui_shop_name'
+            + '   FROM bi_app.dm_zdm_haojia_a final'
+            + '   WHERE article_id = \'' + String(articleId).replace(/'/g, '') + '\''
+            + '   LIMIT 1'
+            + ' ) b'
+            + ' LEFT JOIN ('
+            + '   SELECT pro_id, SUM(gmv_rmb) AS gmv, SUM(cps) AS cps, SUM(order_num) AS order_num'
+            + '   FROM bi_app.ads_zdm_trade_orderproduct_realtime final'
+            + '   WHERE toDate(order_create_time) BETWEEN today()-2 AND today()'
+            + '   AND is_valid_order = \'1\''
+            + '   GROUP BY pro_id'
+            + ' ) a ON a.pro_id = b.marketing_id';
+
+          supersetQuery(sql1, function(err1, r1) {
+            if (err1) console.log('[sales] sql1 err:', err1);
+            var row = (!err1 && r1 && r1.data && r1.data[0]) ? r1.data[0] : null;
+            try { GM_setValue(SALES_CACHE_KEY, JSON.stringify({ row: row, ts: Date.now() })); } catch(e) {}
+            renderAll(row);
+          });
+
+          function renderAll(row) {
+              if (!box) return;
+              var html = '<div style="margin-bottom:8px;">';
+
+              // 归因数据（累计）
+              html += '<div style="font-weight:600;color:#333;font-size:11px;margin-bottom:4px;">归因数据（累计）</div>';
+              if (row) {
+                var g2 = 'display:flex;justify-content:space-between;';
+                html += '<div style="background:#fff7e6;border-radius:4px;padding:6px 8px;font-size:11px;">'
+                  + '<div style="' + g2 + 'margin-bottom:3px;">'
+                  + '<span>归因GMV：<b style="color:#ff7a00;">¥' + (row.ascribe_gmv || 0) + '</b></span>'
+                  + '<span>归因CPS：<b style="color:#ff7a00;">¥' + (row.ascribe_cps || 0) + '</b></span>'
+                  + '</div>'
+                  + '<div style="' + g2 + '">'
+                  + '<span>归因订单量：<b style="color:#ff7a00;">' + (row.ascribe_order || 0) + '</b></span>'
+                  + '<span style="color:#999;">店铺：' + coEsc(row.youhui_shop_name || '—') + '</span>'
+                  + '</div>'
+                  + '</div>';
+              } else {
+                html += '<div style="color:#bbb;font-size:11px;padding:4px 0;">暂无数据</div>';
+              }
+
+              // 近3日映射
+              html += '<div style="font-weight:600;color:#333;font-size:11px;margin-bottom:4px;margin-top:8px;">近3日映射数据</div>';
+              if (row && (row.map_gmv || row.map_cps)) {
+                var g2 = 'display:flex;justify-content:space-between;';
+                html += '<div style="background:#f6ffed;border-radius:4px;padding:6px 8px;font-size:11px;">'
+                  + '<div style="' + g2 + 'margin-bottom:3px;">'
+                  + '<span>映射GMV：<b style="color:#52c41a;">¥' + (row.map_gmv || 0) + '</b></span>'
+                  + '<span>映射CPS：<b style="color:#52c41a;">¥' + (row.map_cps || 0) + '</b></span>'
+                  + '</div>'
+                  + '<div style="' + g2 + '">'
+                  + '<span>映射订单量：<b style="color:#52c41a;">' + (row.map_order_num || 0) + '</b></span>'
+                  + '<span>佣比：<b id="co-sales-comm-rate" style="color:#1890ff;">查询中...</b></span>'
+                  + '</div>'
+                  + '</div>';
+              } else {
+                html += '<div style="color:#bbb;font-size:11px;padding:4px 0;">暂无数据</div>';
+              }
+              html += '<div style="text-align:right;margin-top:6px;"><span id="co-sales-refresh" style="color:#bbb;font-size:10px;cursor:pointer;">刷新</span></div>';
+              html += '</div>';
+              box.innerHTML = html;
+              _salesLoaded = true;
+
+              var refreshBtn = document.getElementById('co-sales-refresh');
+              if (refreshBtn) refreshBtn.onclick = function() { _salesLoaded = false; coLoadSalesData(true); };
+
+              // 查询佣比
+              coQuerySalesCommission();
+            }
+        }
+
         // Tab 切换
         function coSwitchTab(key) {
           GM_setValue('tuopin_active_tab', key);
-          ['optimize','inject','task'].forEach(function(k) {
+          ['optimize','sales','inject','task'].forEach(function(k) {
             var body = document.getElementById('co-tab-' + k);
             var btn = document.getElementById('co-tab-btn-' + k);
             if (body) body.style.display = k === key ? 'block' : 'none';
@@ -4385,11 +4572,14 @@
               }
             }
           });
+          if (key === 'sales') coLoadSalesData();
         }
-        ['optimize','inject','task'].forEach(function(k) {
+        ['optimize','sales','inject','task'].forEach(function(k) {
           var btn = document.getElementById('co-tab-btn-' + k);
           if (btn) btn.onclick = function() { coSwitchTab(k); };
         });
+        // 若默认 tab 是 sales，立即加载
+        if (coActiveTab === 'sales') coLoadSalesData();
 
         // 代码植入 tab 日志
         function injectLog(msg) {
