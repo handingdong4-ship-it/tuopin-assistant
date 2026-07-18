@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      4.3.4
+// @version      5.4.2
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -14,6 +14,8 @@
 // @match        *://biaodan.bgm.smzdm.com/*
 // @match        *://www.smzdm.com/p/*
 // @match        *://task-bgm.smzdm.com/*
+// @match        *://search.jd.com/*
+// @match        *://list.jd.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -979,19 +981,16 @@
         if (addCouponBtn && addCouponBtn.offsetParent) addCouponBtn.click();
       }
 
-      // 标签
-      if (item.subsidy && parseFloat(item.subsidy) > 0) {
-        var tagInput = document.querySelector('#tag_name');
-        if (tagInput) {
-          setInputValue(tagInput, '美食自补');
+      // 标签：读面板多选标签（tuopin_selected_tags）逐个添加
+      var _selTags1 = [];
+      try { _selTags1 = JSON.parse(GM_getValue('tuopin_selected_tags', '[]')); } catch(e) {}
+      var tagInput = document.querySelector('#tag_name');
+      if (tagInput && _selTags1.length) {
+        var addTagBtn = document.querySelector('#add_new_tag');
+        for (var t1 = 0; t1 < _selTags1.length; t1++) {
+          setInputValue(tagInput, _selTags1[t1]);
           await sleep(100);
-          var addTagBtn = document.querySelector('#add_new_tag');
-          if (addTagBtn) addTagBtn.click();
-          await sleep(300);
-          // 加"今日必买"标签
-          setInputValue(tagInput, '今日必买');
-          await sleep(100);
-          if (addTagBtn) addTagBtn.click();
+          if (addTagBtn) { addTagBtn.click(); await sleep(300); }
         }
       }
 
@@ -1131,18 +1130,16 @@
         if (addCouponBtn && addCouponBtn.offsetParent) addCouponBtn.click();
       }
 
-      // 标签：有补贴才加"美食自补"+"今日必买"
-      if (item.subsidy && parseFloat(item.subsidy) > 0) {
-        var tagInput = document.querySelector('#tag_name');
-        if (tagInput) {
-          setInputValue(tagInput, '美食自补');
+      // 标签：读面板多选标签（tuopin_selected_tags）逐个添加
+      var _selTags2 = [];
+      try { _selTags2 = JSON.parse(GM_getValue('tuopin_selected_tags', '[]')); } catch(e) {}
+      var tagInput = document.querySelector('#tag_name');
+      if (tagInput && _selTags2.length) {
+        var addTagBtn = document.querySelector('#add_new_tag');
+        for (var t2 = 0; t2 < _selTags2.length; t2++) {
+          setInputValue(tagInput, _selTags2[t2]);
           await sleep(100);
-          var addTagBtn = document.querySelector('#add_new_tag');
-          if (addTagBtn) addTagBtn.click();
-          await sleep(300);
-          setInputValue(tagInput, '今日必买');
-          await sleep(100);
-          if (addTagBtn) addTagBtn.click();
+          if (addTagBtn) { addTagBtn.click(); await sleep(300); }
         }
       }
 
@@ -1582,6 +1579,9 @@
           '<input id="ds-email-input" type="text" placeholder="添加邮箱" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
           '<button id="ds-email-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
         '</div></div>' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">渠道Code</label>' +
+        '<input id="ds-code" type="text" placeholder="请填写code" style="width:100%;padding:4px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>' +
+        '<button id="ds-save-only" style="width:100%;padding:7px;background:#fff;color:#666;border:1px solid #bbb;border-radius:4px;font-size:13px;cursor:pointer;margin-bottom:4px;">保存（不补贴）</button>' +
         '<button id="ds-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">去补贴</button>' +
         '<div id="tuopin-direct-log" style="margin-top:4px;max-height:120px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:5px 6px;font-size:11px;line-height:1.5;color:#666;display:none;"></div>';
       h += '</div>';
@@ -1717,6 +1717,14 @@
       };
     }
 
+    function dsInitCode() {
+      var codeEl = document.getElementById('ds-code');
+      if (!codeEl) return;
+      codeEl.value = GM_getValue('tuopin_subsidy_code', '');
+      codeEl.onchange = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+      codeEl.onblur = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+    }
+
     // 计算 佣金 = 补贴前订单价 × 佣比（不随补贴变化）
     function updateCalcCommission() {
       var box = document.getElementById('ds-commission-calc');
@@ -1784,7 +1792,14 @@
       }
       if (t && titleEl) t.value = titleEl.value || '';
       var brandInput = document.getElementById('ds-brand');
-      if (brandInput) { var brandEl = document.querySelector('#article_brand, [name="article_brand"]'); if (brandEl) brandInput.value = brandEl.value || ''; }
+      if (brandInput) {
+        var brandEl = document.querySelector('#article_brand, [name="article_brand"]');
+        if (brandEl) {
+          var rawBrand = brandEl.value || '';
+          var slashIdx = rawBrand.indexOf('/');
+          brandInput.value = slashIdx >= 0 ? rawBrand.slice(slashIdx + 1).trim() : rawBrand;
+        }
+      }
       // 到手价 = 订单价(article_final_price)；折单价 = 折后单价(article_digital_price)
       if (d && dealEl) { d.value = dealEl.value || ''; dsBaseDeal = d.value; }
       if (u && unitEl) { u.value = unitEl.value || ''; dsBaseUnit = u.value; }
@@ -1867,8 +1882,8 @@
       updateCalcCommission();
     }
 
-    async function injectAndSave() {
-      var goBtn = document.getElementById('ds-go');
+    async function injectAndSave(saveOnly) {
+      var goBtn = document.getElementById(saveOnly ? 'ds-save-only' : 'ds-go');
       if (goBtn) { goBtn.disabled = true; goBtn.textContent = '处理中...'; }
       var logBox = document.getElementById('tuopin-direct-log');
       if (logBox) logBox.style.display = 'block';
@@ -2014,6 +2029,12 @@
       }
       dsLog(saved ? '✓ 保存成功' : '⚠ 未检测到保存成功');
 
+      // saveOnly 模式：只保存，不建表单
+      if (saveOnly) {
+        if (goBtn) { goBtn.disabled = false; goBtn.textContent = '保存（不补贴）'; }
+        return;
+      }
+
       // 6. 加入补贴队列并跳转
       if (articleId) {
         // 读取文章商家，建表单时商城对应（京东→600233，否则→600008）
@@ -2036,6 +2057,7 @@
             bDuan: '',
             gid: dsProductId || '',
             promoCopy: copy,
+            code: (document.getElementById('ds-code') ? document.getElementById('ds-code').value.trim() : '') || GM_getValue('tuopin_subsidy_code', ''),
             fromPrevArticle: true
           });
           GM_setValue('tuopin_subsidy_queue', JSON.stringify(sq));
@@ -2070,6 +2092,7 @@
       dsWireEmail();
       dsRefreshTagSelect();
       dsWireTag();
+      dsInitCode();
       readExisting();
       // 到手价/件数/补贴 变化时重新生成新文案
       ['ds-deal', 'ds-qty', 'ds-subsidy'].forEach(function(id) {
@@ -2077,7 +2100,9 @@
         if (el) el.addEventListener('input', regenCopy);
       });
       var goBtn = document.getElementById('ds-go');
-      if (goBtn) goBtn.onclick = function() { injectAndSave(); };
+      if (goBtn) goBtn.onclick = function() { injectAndSave(false); };
+      var saveOnlyBtn = document.getElementById('ds-save-only');
+      if (saveOnlyBtn) saveOnlyBtn.onclick = function() { injectAndSave(true); };
     }
 
     if (document.readyState === 'complete') {
@@ -2627,7 +2652,6 @@
     return;
   }
   // ===== END edit_youhui 逻辑 =====
-
   // ===== 补贴表单自动化逻辑 =====
   if (location.hostname === 'biaodan.bgm.smzdm.com') {
     // 拦截原生 alert/confirm（如"字段添加成功！页面即将刷新..."），自动确认并记录消息
@@ -2662,7 +2686,8 @@
       panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:16px;width:340px;font-family:-apple-system,sans-serif;font-size:13px;max-height:50vh;overflow-y:auto;';
       panel.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
         '<div style="font-weight:600;font-size:15px;color:#e74c3c;">补贴表单自动创建</div>' +
-        '<button id="tuopin-subsidy-stop" style="padding:4px 12px;border:1px solid #ff4d4f;border-radius:4px;background:#fff;color:#ff4d4f;cursor:pointer;font-size:12px;">停止</button>' +
+        '<div><button id="tuopin-subsidy-mon" style="padding:4px 8px;border:1px solid #1890ff;border-radius:4px;background:#fff;color:#1890ff;cursor:pointer;font-size:12px;margin-right:6px;">导出监控</button>' +
+        '<button id="tuopin-subsidy-stop" style="padding:4px 12px;border:1px solid #ff4d4f;border-radius:4px;background:#fff;color:#ff4d4f;cursor:pointer;font-size:12px;">停止</button></div>' +
         '</div>' +
         '<div id="tuopin-subsidy-progress" style="color:#1890ff;margin-bottom:6px;">准备中...</div>' +
         '<div id="tuopin-subsidy-log" style="max-height:200px;overflow-y:auto;background:#f5f5f5;border-radius:4px;padding:8px;font-size:11px;line-height:1.6;color:#666;"></div>';
@@ -2673,6 +2698,21 @@
         subsidyLog('已停止');
         var progressEl = document.getElementById('tuopin-subsidy-progress');
         if (progressEl) progressEl.textContent = '已停止';
+      };
+      document.getElementById('tuopin-subsidy-mon').onclick = function() {
+        var raw = GM_getValue('tuopin_mon_log', '[]');
+        console.log('===== TUOPIN 监控日志 =====\n' + raw);
+        try { navigator.clipboard.writeText(raw); } catch(e) {}
+        try {
+          var logs = JSON.parse(raw);
+          var box = document.getElementById('tuopin-subsidy-log');
+          if (box) {
+            box.innerHTML = '<div style="color:#1890ff;font-weight:600;">监控日志(' + logs.length + '条,已复制到剪贴板):</div>';
+            logs.forEach(function(l) {
+              box.innerHTML += '<div style="border-bottom:1px solid #eee;padding:2px 0;">[' + l.ts + '] ' + l.aid + ' <b>' + l.tag + '</b> ' + JSON.stringify(l.data) + '</div>';
+            });
+          }
+        } catch(e) {}
       };
     }
 
@@ -2786,40 +2826,222 @@
 
     async function fillSubsidyForm(item) {
       subsidyLog('开始填写表单...');
-      await sleep(1500);
+
+      // ===== 重入令牌：防止同一/不同商品的 fillSubsidyForm 并发执行 =====
+      // 转链会导致表单重渲染，SPA 可能二次触发 processSubsidyQueue → fillSubsidyForm 并发跑，
+      // 旧运行的滞后异步(如 20s 活动规则轮询)会覆盖新运行已填好的内容(把 taLen 清成 0)。
+      // 领取全局递增令牌，每个关键异步步骤后校验自己仍是最新令牌，否则立即中止。
+      var _uwTok = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+      _uwTok.__tpFillToken = (_uwTok.__tpFillToken || 0) + 1;
+      var myToken = _uwTok.__tpFillToken;
+      function tokenValid() { return _uwTok.__tpFillToken === myToken; }
+
+      // ===== 监控埋点：跨页持久化到 GM，跑完后可一次性导出分析 =====
+      function subsidyMon(tag, data) {
+        try {
+          var logs = JSON.parse(GM_getValue('tuopin_mon_log', '[]'));
+          var t = new Date();
+          var ts = t.getHours() + ':' + ('0'+t.getMinutes()).slice(-2) + ':' + ('0'+t.getSeconds()).slice(-2) + '.' + ('00'+t.getMilliseconds()).slice(-3);
+          logs.push({ ts: ts, aid: item.articleId, tag: tag, data: data });
+          if (logs.length > 400) logs = logs.slice(-400);
+          GM_setValue('tuopin_mon_log', JSON.stringify(logs));
+          console.log('[MON ' + ts + '] ' + item.articleId + ' | ' + tag + ' | ' + JSON.stringify(data));
+        } catch(e) {}
+      }
+      // 抓取商城 + 活动规则的当前真实状态(原生上下文)
+      function snapState() {
+        var _uwS = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+        try {
+          return (new _uwS.Function([
+            'var selTxt = document.querySelector(".multiselect-trigger .selected-text");',
+            'var checkedMalls = Array.from(document.querySelectorAll(".multiselect-option input[name=\\"mall_ids[]\\"]")).filter(function(c){return c.checked;}).map(function(c){return c.value;});',
+            'var ta = document.getElementById("activity_rules");',
+            'var taLen = ta ? (ta.value||"").length : -1;',
+            'var ueLen = -1;',
+            'try { var ue = window.UE && window.UE.getEditor("activity_rules"); ueLen = ue && ue.hasContents() ? ue.getContent().length : 0; } catch(e){}',
+            'return { mallSel: selTxt ? selTxt.textContent.trim().slice(0,12) : "NO-EL", mallChecked: checkedMalls.join(","), taLen: taLen, ueLen: ueLen };'
+          ].join('\n')))();
+        } catch(e) { return { err: e.message }; }
+      }
+
+      // ===== 终极方案：注入 <script> 标签到页面，代码 100% 在页面原生上下文运行 =====
+      // 必须用 unsafeWindow.document 创建/挂载 script，否则沙箱 document 注入的脚本上下文错乱，
+      // 导致组件事件监听器收不到(表现为 checked=true 但 selected-text 不更新)。
+      // asyncFnBody 内需在完成时调用 __done(result)。返回 Promise<string>。
+      var _udocRun = (typeof unsafeWindow !== 'undefined' && unsafeWindow.document) ? unsafeWindow.document : document;
+      var _runSeq = 0;
+      function runInPage(asyncFnBody, timeoutMs) {
+        return new Promise(function(resolve) {
+          _runSeq++;
+          var id = 'tp_run_' + _runSeq;
+          var holder = _udocRun.createElement('div');
+          holder.id = id;
+          holder.style.display = 'none';
+          (_udocRun.body || _udocRun.documentElement).appendChild(holder);
+          var code = '(async function(){' +
+            'var __h = document.getElementById("' + id + '");' +
+            'function __done(r){ if(!__h) return; __h.setAttribute("data-result", (typeof r === "string") ? r : JSON.stringify(r)); __h.setAttribute("data-ready","1"); }' +
+            'try {\n' + asyncFnBody.split('__RUNID__').join('"' + id + '"') + '\n} catch(e){ __done("ERR:"+(e&&e.message||e)); }' +
+            '})();';
+          var s = _udocRun.createElement('script');
+          s.textContent = code;
+          (_udocRun.body || _udocRun.documentElement).appendChild(s);
+          s.remove();
+          var waited = 0;
+          var lim = timeoutMs || 30000;
+          var iv = setInterval(function() {
+            waited += 100;
+            var h = _udocRun.getElementById(id);
+            if (h && h.getAttribute('data-ready') === '1') {
+              clearInterval(iv);
+              var r = h.getAttribute('data-result');
+              h.remove();
+              resolve(r);
+            } else if (waited >= lim) {
+              clearInterval(iv);
+              if (h) h.remove();
+              resolve('RUN_TIMEOUT');
+            }
+          }, 100);
+        });
+      }
+      // 新一轮自动清空监控日志：距上次埋点 >2 分钟视为新任务
+      try {
+        var _lastMon = parseInt(GM_getValue('tuopin_mon_last', '0')) || 0;
+        if (Date.now() - _lastMon > 120000) GM_setValue('tuopin_mon_log', '[]');
+        GM_setValue('tuopin_mon_last', String(Date.now()));
+      } catch(e) {}
+      subsidyMon('ENTER', { type: item.type, title: (item.title||'').slice(0,20), mall: item.mall, cleanLink: (item.cleanLink||'').slice(0,40) });
+
+      // 在页面原生上下文执行函数，彻底绕开 Tampermonkey XRay 沙箱
+      // XRay 会包装沙箱里获取的 DOM 元素，导致 .click()/.value 被拦截静默失败
+      var _uw = (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window;
+      function _pageExec(fnBody, args) {
+        var fn = new _uw.Function('args', 'var a=args||{};\n' + fnBody);
+        return fn(args || {});
+      }
+      function _pageExecAsync(fnBody, args) {
+        var fn = new _uw.Function('args', 'var a=args||{};\n' + fnBody);
+        return Promise.resolve(fn(args || {}));
+      }
+
+      // 等待表单名称输入框出现（轮询最多 15s），比固定 sleep 更可靠
+      // SPA 路由跳转后 Vue 组件挂载时间不固定，第2个品开始容易挂载慢
+      var nameField = null;
+      for (var fw = 0; fw < 30; fw++) {
+        nameField = document.querySelector('input[placeholder*="用于表单后台展示"]');
+        if (nameField && nameField.offsetParent !== null) break;
+        await sleep(500);
+      }
+      if (!nameField) {
+        subsidyMon('FAIL_NAMEFIELD', {});
+        subsidyLog('✗ 表单名称输入框 15s 内未出现，停止');
+        return;
+      }
 
       var dates = calcDates();
-
-      // 1. 表单名称（日期+品牌+标题）
       var now = new Date();
       var datePrefix = (now.getMonth() + 1) + '.' + now.getDate();
-      var nameField = document.querySelector('input[placeholder*="用于表单后台展示"]');
       var brand = (item.brand || '').trim();
-      var formName = datePrefix + (brand ? brand : '') + (item.title || '').slice(0, 20);
-      if (nameField) { setInputValue(nameField, formName); subsidyLog('✓ 表单名称'); }
+      var isShequn = (item.type === 'shequn');
 
-      // 1.2 表单标题（前台展示给用户，跟表单名称一样）
+      // ── 表单名称格式 ──
+      // 社群：社群-当天日期-商品名称；非社群：日期+品牌+标题
+      var formName;
+      if (isShequn) {
+        formName = '社群-' + datePrefix + '-' + (item.title || '').slice(0, 20);
+      } else {
+        formName = datePrefix + (brand ? brand : '') + (item.title || '').slice(0, 20);
+      }
+
+      // 0. 适用终端 — 最先执行。applyTerminalScope4 触发页面联动(现金锁定/商城过滤/UEditor初始化)，
+      // 页面渲染完成后再填字段，活动规则步骤时 UEditor iframe 已就绪。
+      subsidyMon('S2_ZL_START', { type: item.type });
+      var termVal = isShequn ? '1' : '2';
+      var termResult = await runInPage([
+        'var val = ' + JSON.stringify(termVal) + ';',
+        'var r = document.querySelector("input[name=\'terminal_scope\'][value=\'" + val + "\']");',
+        'if (!r) { __done("no-radio"); return; }',
+        'r.checked = true;',
+        'r.dispatchEvent(new Event("change", { bubbles: true }));',
+        'try { if (typeof applyTerminalScope4 === "function") applyTerminalScope4(val); } catch(e){ __done("ERR:"+(e&&e.message||e)); return; }',
+        'setTimeout(function(){',
+        '  var checked = document.querySelector("input[name=\'terminal_scope\']:checked");',
+        '  __done("ok val=" + (checked ? checked.value : "none"));',
+        '}, 400);'
+      ].join('\n'), 6000);
+      subsidyMon('S2_ZL_DONE', { termVal: termVal, result: termResult });
+      subsidyLog('✓ 终端范围 (' + termResult + ')');
+      await sleep(600);
+
+      // 1. 表单名称
+      setInputValue(nameField, formName); subsidyLog('✓ 表单名称');
+      subsidyMon('S1_NAME', {});
+
+      // 1.2 表单标题（前台展示）
       var titleField = document.querySelector('input[placeholder*="前台展示给用户"]') || document.querySelector('input[placeholder*="非必填"]');
       if (titleField && titleField !== nameField) { setInputValue(titleField, formName); subsidyLog('✓ 表单标题'); }
 
-      // 1.5 商品标题（品牌+商品名）
+      // 1.5 商品标题
       var goodsTitleField = document.querySelector('input[placeholder*="用于好价详情页活动规则展示"]');
-      if (goodsTitleField) { setInputValue(goodsTitleField, (brand ? brand : '') + (item.title || '')); subsidyLog('✓ 商品标题'); }
+      if (goodsTitleField) {
+        var goodsTitle = (brand ? brand : '') + (item.title || '');
+        setInputValue(goodsTitleField, goodsTitle);
+        subsidyLog('✓ 商品标题');
+      }
+      subsidyMon('S1_TITLE_DONE', { hasTitle: !!titleField, hasGoodsTitle: !!goodsTitleField });
 
-      // 2. 适用终端: APP+PC+Wap
-      clickRadioByText('APP+PC+Wap');
+      // 3. 活动链接 — 原生上下文执行
+      _pageExec([
+        'var f = document.querySelector("input[placeholder*=\'用于发站内信时的活动链接\']");',
+        'if (f) {',
+        '  var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");',
+        '  if (setter && setter.set) setter.set.call(f, a.link); else f.value = a.link;',
+        '  f.dispatchEvent(new Event("input", { bubbles: true }));',
+        '  f.dispatchEvent(new Event("change", { bubbles: true }));',
+        '}'
+      ].join('\n'), { link: 'https://www.smzdm.com/p/' + item.articleId + '/' });
 
-      // 3. 活动链接（用3日精选文章id构建链接，如果是来自价格相等的跳过）
-      var linkField = document.querySelector('input[placeholder*="用于发站内信时的活动链接"]');
-      if (linkField) {
-        var articleUrl = 'https://www.smzdm.com/p/' + item.articleId + '/';
-        if (item.fromPrevArticle && item.articleId) {
-          articleUrl = 'https://www.smzdm.com/p/' + item.articleId + '/';
-        }
-        setInputValue(linkField, articleUrl);
+      // 3.5 商品链接 — 社群填面板商品链接后点"转链"(#btn-single-transfer4)
+      // 该区块在 span.terminal-scope-wx-only 里，选了"仅微信小程序"才显示(第2步已选)。
+      // 转链按钮是 jQuery 绑定的 <button id="btn-single-transfer4">，必须在页面上下文点击才触发
+      // doSingleTransfer4()，成功后自动回填商品编码(skuid)。故用 runInPage 注入。
+      if (isShequn && item.cleanLink) {
+        var transferResult = await runInPage([
+          'var link = ' + JSON.stringify(item.cleanLink) + ';',
+          'var f = document.getElementById("single-product-url4") || document.querySelector("input[name=\'single_product_url\']");',
+          'if (!f) { __done("no-input"); return; }',
+          'var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");',
+          'if (setter && setter.set) setter.set.call(f, link); else f.value = link;',
+          'f.dispatchEvent(new Event("input", { bubbles: true }));',
+          'f.dispatchEvent(new Event("change", { bubbles: true }));',
+          '// 精确点转链按钮',
+          'var btn = document.getElementById("btn-single-transfer4");',
+          'if (!btn) { var bs=document.querySelectorAll("#single-link-panel4 button, .input-group-btn button"); for (var i=0;i<bs.length;i++){ if((bs[i].textContent||"").trim()==="转链"){ btn=bs[i]; break; } } }',
+          'if (!btn) { __done("no-btn"); return; }',
+          'btn.click();',
+          '// 轮询等转链回填(最多 9s)：商品编码(skuid) + 主图(focus_pic_url)。主图是必填，否则下一步校验不过。',
+          'var waited=0; var iv=setInterval(function(){',
+          '  waited+=400;',
+          '  var sku=document.querySelector("textarea[name=\'skuid\']");',
+          '  var skuVal = sku ? (sku.value||"").trim() : "";',
+          '  var fp=document.getElementById("focus_pic_url");',
+          '  var fpVal = fp ? (fp.value||"").trim() : "";',
+          '  var failEl=document.getElementById("focus-pic-fetch-fail");',
+          '  var failShown = failEl && failEl.offsetParent!==null;',
+          '  if (skuVal.length>0 && fpVal.length>0) { clearInterval(iv); __done("ok skuid="+skuVal+" img=1"); return; }',
+          '  if (failShown) { clearInterval(iv); __done("img-fetch-fail skuid="+skuVal); return; }',
+          '  if (waited>=9000) { clearInterval(iv); __done("timeout skuid="+(skuVal?1:0)+" img="+(fpVal?1:0)); }',
+          '}, 400);'
+        ].join('\n'), 11000);
+        subsidyMon('S3_TRANSFER_DONE', { result: transferResult });
+        subsidyLog('✓ 商品链接 + 转链 (' + transferResult + ')');
+        if (transferResult.indexOf('img-fetch-fail') >= 0) subsidyLog('⚠ 主图获取失败，需手动上传商品主图');
+        if (transferResult.indexOf('img=0') >= 0) subsidyLog('⚠ 主图未回填，下一步可能被拦，请检查');
       }
 
       // 4. ROI
+      subsidyMon('S3_ROI_START', {});
       var roiField = document.querySelector('input[placeholder*="支持小数点后两位"]')
         || document.querySelector('input[placeholder*="有效的数字"]')
         || document.querySelector('input[type="number"][placeholder]');
@@ -2834,70 +3056,144 @@
         }
       }
       if (roiField) setInputValue(roiField, '1');
+      subsidyMon('S4_ROI_DONE', { found: !!roiField });
 
-      // 5. 补贴来源: 兴趣
-      clickRadioByText('兴趣');
-      await sleep(400); // 等兴趣部门 checkbox 出现
-
-      // 5.5 兴趣部门: 勾选"美食部"
-      var checkboxes = document.querySelectorAll('input[type="checkbox"]');
-      var meishiChecked = false;
-      for (var ci = 0; ci < checkboxes.length; ci++) {
-        var cbLabel = checkboxes[ci].parentElement;
-        if (cbLabel && (cbLabel.textContent || '').indexOf('美食部') >= 0) {
-          if (!checkboxes[ci].checked) checkboxes[ci].click();
-          meishiChecked = true; break;
+      // 5. 补贴来源 — 兴趣+美食部
+      // 社群：合成 click 不触发 jQuery change handler，必须 runInPage 直接设 checked + dispatch change
+      // 非社群：clickRadioByText + checkbox .click()
+      if (isShequn) {
+        var srcResult = await runInPage([
+          'var r = document.querySelector("input[name=\'subsidy_source\'][value=\'2\']");',
+          'if (r) { r.checked = true; r.dispatchEvent(new Event("change", {bubbles:true})); }',
+          'var d = document.querySelector("input[name=\'subsidy_source_department[]\'][value=\'3\']");',
+          'if (d) { d.checked = true; d.dispatchEvent(new Event("change", {bubbles:true})); }',
+          'setTimeout(function(){',
+          '  var sc = document.querySelector("input[name=\'subsidy_source\']:checked");',
+          '  var dc = Array.from(document.querySelectorAll("input[name=\'subsidy_source_department[]\']")).filter(function(x){return x.checked;}).length;',
+          '  __done("source="+(sc?sc.value:"none")+" dept="+dc);',
+          '}, 300);'
+        ].join('\n'), 5000);
+        subsidyLog('✓ 补贴来源+美食部 (' + srcResult + ')');
+      } else {
+        clickRadioByText('兴趣');
+        await sleep(400);
+        var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+        var meishiChecked = false;
+        for (var ci = 0; ci < checkboxes.length; ci++) {
+          var cbLabel = checkboxes[ci].parentElement;
+          if (cbLabel && (cbLabel.textContent || '').indexOf('美食部') >= 0) {
+            if (!checkboxes[ci].checked) checkboxes[ci].click();
+            meishiChecked = true; break;
+          }
+          var cbNext = checkboxes[ci].nextSibling;
+          if (cbNext && (cbNext.textContent || '').indexOf('美食部') >= 0) {
+            if (!checkboxes[ci].checked) checkboxes[ci].click();
+            meishiChecked = true; break;
+          }
         }
-        var cbNext = checkboxes[ci].nextSibling;
-        if (cbNext && (cbNext.textContent || '').indexOf('美食部') >= 0) {
-          if (!checkboxes[ci].checked) checkboxes[ci].click();
-          meishiChecked = true; break;
+        if (!meishiChecked) {
+          var allLabels = document.querySelectorAll('label, span');
+          for (var li = 0; li < allLabels.length; li++) {
+            if ((allLabels[li].textContent || '').trim() === '美食部') { allLabels[li].click(); meishiChecked = true; break; }
+          }
         }
+        subsidyLog(meishiChecked ? '✓ 美食部' : '✗ 美食部');
       }
-      if (!meishiChecked) {
-        var allLabels = document.querySelectorAll('label, span');
-        for (var li = 0; li < allLabels.length; li++) {
-          if ((allLabels[li].textContent || '').trim() === '美食部') { allLabels[li].click(); meishiChecked = true; break; }
-        }
-      }
-      subsidyLog(meishiChecked ? '✓ 美食部' : '✗ 美食部');
 
       // 6-7. 审核时间 + 活动时间
-      var timeInputsStart = document.querySelectorAll('input[placeholder="开始时间"]');
-      var timeInputsEnd = document.querySelectorAll('input[placeholder="结束时间"]');
-      if (timeInputsStart.length >= 1) setInputValue(timeInputsStart[0], dates.startTime);
-      if (timeInputsEnd.length >= 1) setInputValue(timeInputsEnd[0], dates.auditEndTime);
-      if (timeInputsStart.length >= 2) setInputValue(timeInputsStart[1], dates.startTime);
-      if (timeInputsEnd.length >= 2) setInputValue(timeInputsEnd[1], dates.auditEndTime);
+      // 社群用 name 属性精准定位，非社群用 placeholder 顺序
+      subsidyMon('S5_SOURCE_DONE', {});
+      if (isShequn) {
+        var sqSetT = function(sel, val) { var el = document.querySelector(sel); if (el) setDateTimeField(el, val); };
+        sqSetT('input[name="subsidy_check_starttime"]', dates.startTime);
+        sqSetT('input[name="subsidy_check_endtime"]', dates.auditEndTime);
+        sqSetT('input[name="subsidy_starttime[0]"]', dates.startTime);
+        sqSetT('input[name="subsidy_endtime[0]"]', dates.auditEndTime);
+      } else {
+        var timeInputsStart = document.querySelectorAll('input[placeholder="开始时间"]');
+        var timeInputsEnd = document.querySelectorAll('input[placeholder="结束时间"]');
+        if (timeInputsStart.length >= 1) setInputValue(timeInputsStart[0], dates.startTime);
+        if (timeInputsEnd.length >= 1) setInputValue(timeInputsEnd[0], dates.auditEndTime);
+        if (timeInputsStart.length >= 2) setInputValue(timeInputsStart[1], dates.startTime);
+        if (timeInputsEnd.length >= 2) setInputValue(timeInputsEnd[1], dates.auditEndTime);
+      }
 
       // 8. 名额
       var quotaField = document.querySelector('input[placeholder="填写表单名额数"]');
       if (quotaField) setInputValue(quotaField, '50');
+      subsidyMon('S8_QUOTA_DONE', { quota: !!quotaField });
 
-      // 9. 商城 - custom-multiselect
-      var mallVal = (item.mall || '').indexOf('京东') >= 0 ? '600233' : '600008';
-      var mallTrigger = document.querySelector('.multiselect-trigger');
-      if (mallTrigger) {
-        mallTrigger.click();
-        await sleep(200);
-        var mallCb = document.querySelector('.multiselect-option input[type="checkbox"][value="' + mallVal + '"]');
-        if (mallCb && !mallCb.checked) {
-          var mallLbl = mallCb.closest('label');
-          if (mallLbl) mallLbl.click(); else mallCb.click();
-        }
-        await sleep(100);
-        mallTrigger.click();
-        subsidyLog('✓ 商城');
-      } else {
-        var mallSelect = document.querySelector('select[name="mall_ids[]"]');
-        if (mallSelect) { mallSelect.value = mallVal; mallSelect.dispatchEvent(new Event('change', { bubbles: true })); }
+      // 9. 商城 - 点开下拉后用 label.click() 触发组件原生事件
+      // 商城编码表: 600233=京东 600008=淘系 600360=小米有品 600364=拼多多 600205=唯品会 600640=美团外卖 600704=美团到店
+      var mallStr = (item.mall || '').trim();
+      var mallVal = '600008'; // 默认淘系
+      if (mallStr.indexOf('京东') >= 0) mallVal = '600233';
+      else if (mallStr.indexOf('小米') >= 0 || mallStr.indexOf('有品') >= 0) mallVal = '600360';
+      else if (mallStr.indexOf('拼多多') >= 0) mallVal = '600364';
+      else if (mallStr.indexOf('唯品会') >= 0) mallVal = '600205';
+      else if (mallStr.indexOf('美团外卖') >= 0) mallVal = '600640';
+      else if (mallStr.indexOf('美团') >= 0) mallVal = '600704';
+      // 淘宝/天猫/淘系 均映射到 600008
+      var mallLabelMap = {'600233':'京东','600008':'淘系','600360':'小米有品','600364':'拼多多','600205':'唯品会','600640':'美团外卖','600704':'美团到店'};
+      var mallLabel = mallLabelMap[mallVal] || '淘系';
+      var _udoc = (typeof unsafeWindow !== 'undefined' && unsafeWindow.document) ? unsafeWindow.document : document;
+      // 等待 multiselect 出现（SPA 渲染可能延迟）
+      var mallTrigger = null;
+      for (var mw = 0; mw < 10; mw++) {
+        mallTrigger = _udoc.querySelector('.multiselect-trigger');
+        if (mallTrigger && mallTrigger.offsetParent !== null) break;
+        await sleep(500);
       }
+      subsidyMon('S9_MALL_START', { mallVal: mallVal, mallLabel: mallLabel, triggerFound: !!mallTrigger, preSnap: snapState() });
+      if (mallTrigger) {
+        // 【终极方案】直接调用页面自己的商城设置函数 syncMallSelectionDom4(vals)，完全绕开点击/change 事件竞态。
+        // 根因(已扒源码确认)：组件靠 $(document).on('change') 更新，真实点击是"先 toggle checked 再触发 change"；
+        // 而脚本 label.click() 若 checkbox 已是 checked 会 toggle 成 false → change 里 nowOn=false → 清空选择。
+        // syncMallSelectionDom4([val]) 幂等地设置隐藏 select 的 option.selected + checkbox.checked，
+        // 再配合 updateMultiselectDisplay() 更新显示文字，一步到位，无竞态。
+        var mallResult = await runInPage([
+          'var mallVal = ' + JSON.stringify(mallVal) + ';',
+          'var mallLabel = ' + JSON.stringify(mallLabel) + ';',
+          'try {',
+          '  if (typeof syncMallSelectionDom4 === "function") {',
+          '    syncMallSelectionDom4([mallVal]);',
+          '    if (typeof updateMultiselectDisplay === "function") updateMultiselectDisplay();',
+          '    if (typeof check_mall_price_limit === "function") { try { check_mall_price_limit(); } catch(e){} }',
+          '    if (typeof toggleCommissionMonitor === "function") { try { toggleCommissionMonitor(); } catch(e){} }',
+          '  } else {',
+          '    // 兜底：页面函数不存在时，直接设隐藏 select + checkbox',
+          '    var $hidden = $("select[name=\\"mall_ids[]\\"]");',
+          '    $hidden.find("option").prop("selected", false);',
+          '    $hidden.find("option[value=\\"" + mallVal + "\\"]").prop("selected", true);',
+          '    $("#multiselect-dropdown-container input[name=\\"mall_ids[]\\"]").prop("checked", false);',
+          '    $("#multiselect-dropdown-container input[name=\\"mall_ids[]\\"][value=\\"" + mallVal + "\\"]").prop("checked", true);',
+          '    var st = document.querySelector(".multiselect-trigger .selected-text"); if (st) st.textContent = mallLabel;',
+          '  }',
+          '} catch(e) { __done("ERR:" + (e && e.message || e)); return; }',
+          'setTimeout(function() {',
+          '  var hv = $("select[name=\\"mall_ids[]\\"]").val();',
+          '  var hvStr = hv ? (Array.isArray(hv) ? hv.join(",") : String(hv)) : "";',
+          '  var st = document.querySelector(".multiselect-trigger .selected-text");',
+          '  var selTxt = st ? st.textContent.trim() : "";',
+          '  var ok = hvStr.indexOf(mallVal) >= 0;',
+          '  __done((ok ? "ok" : "fail") + " hiddenVal=" + hvStr + " sel=" + selTxt.slice(0,10));',
+          '}, 300);'
+        ].join('\n'), 8000);
+        subsidyMon('MALL_RESULT', { mallVal: mallVal, mallLabel: mallLabel, result: mallResult });
+        subsidyLog((mallResult.indexOf('ok') >= 0) ? ('✓ 商城: ' + mallLabel + ' (' + mallResult + ')') : ('⚠ 商城: ' + mallResult));
+        await sleep(300);
+        subsidyMon('AFTER_MALL_SNAP', snapState());
+      }
+      if (!tokenValid()) { subsidyMon('ABORT_STALE', { at: 'after_mall' }); return; }
 
-      // 10. 商品编码（优先从productLink提取京东/淘宝真实商品ID，其次gid）
+      // 10. 商品编码 - shequn 从 cleanLink 提取，其他从 productLink 提取
+      subsidyMon('S10_FIELDS_START', {});
       var skuId = '';
-      if (item.productLink) {
-        var jdMatch = item.productLink.match(/item\.jd\.com\/(\d+)/);
-        var tbMatch = item.productLink.match(/[?&]id=(\d+)/);
+      // 社群从面板商品链接(cleanLink)提取商品id，其他从 productLink 提取
+      var linkForSku = (isShequn ? (item.cleanLink || '') : (item.productLink || '')) || item.productLink || item.cleanLink || '';
+      if (linkForSku) {
+        var jdMatch = linkForSku.match(/item\.jd\.com\/(\d+)/);
+        var tbMatch = linkForSku.match(/[?&]id=(\d+)/);
         if (jdMatch) skuId = jdMatch[1];
         else if (tbMatch) skuId = tbMatch[1];
       }
@@ -2923,62 +3219,97 @@
       // 11. 佣比
       if (item.commissionRate) {
         var commField = document.querySelector('input[placeholder*="最低期望佣比"]');
-        if (commField) setInputValue(commField, item.commissionRate + '%');
+        if (commField) {
+          var crVal = String(item.commissionRate).replace('%', '').trim() + '%';
+          setInputValue(commField, crVal);
+        }
       }
 
-      // 12. 预算渠道code
+      // 12. 预算渠道code — 读面板传入的 item.code 或 GM 存储，均空则不填
       var budgetField = document.querySelector('input[placeholder*="预算渠道Code"]');
-      if (budgetField) setInputValue(budgetField, 'zyzx_meishi');
+      if (budgetField) {
+        var codeVal = (item.code || '').trim() || GM_getValue('tuopin_subsidy_code', '');
+        if (codeVal) setInputValue(budgetField, codeVal);
+      }
 
-      // 13. 最低支付金额 = 到手价 - 补贴
+      // 13. 最低支付金额
       var minPayField = document.querySelector('input[placeholder*="满300-100"]') || document.querySelector('input[placeholder*="输入300"]');
+      if (!minPayField) {
+        var allFormEls = document.querySelectorAll('div, label, span, td');
+        for (var mfi = 0; mfi < allFormEls.length; mfi++) {
+          var mfText = (allFormEls[mfi].textContent || '').trim();
+          if (mfText === '最小支付金额' || mfText === '最低支付金额') {
+            var mfParent = allFormEls[mfi].parentElement;
+            if (mfParent) {
+              var mfInput = mfParent.querySelector('input');
+              if (!mfInput && mfParent.parentElement) mfInput = mfParent.parentElement.querySelector('input');
+              if (mfInput) { minPayField = mfInput; break; }
+            }
+          }
+        }
+      }
       if (minPayField) {
-        var dp = parseFloat(item.dealPrice || item.price) || 0;
-        var sub = parseFloat(item.subsidy) || 0;
-        var minPay = Math.floor(dp - sub);
+        var minPay;
+        if (isShequn) {
+          // 社群：最小支付金额 = 面板最终到手价（dealPrice 已是补贴后到手价）
+          minPay = Math.floor(parseFloat(item.dealPrice || item.price) || 0);
+        } else {
+          var dp = parseFloat(item.dealPrice || item.price) || 0;
+          var sub = parseFloat(item.subsidy) || 0;
+          minPay = Math.floor(dp - sub);
+        }
         if (minPay < 0) minPay = 0;
         setInputValue(minPayField, String(minPay));
-        subsidyLog('✓ 最低支付: ' + minPay);
+        subsidyLog('✓ 最小支付: ' + minPay);
       }
 
-      // 14. 补贴积分 = 补贴金额 × 10
+      // 14. 补贴金额 - 社群直接填元，其他×10转积分
       var subsidyField = document.querySelector('input[placeholder*="成本单位"]');
       if (subsidyField) {
-        var subsidyPoints = Math.round((parseFloat(item.subsidy) || 0) * 10);
-        setInputValue(subsidyField, String(subsidyPoints));
-        subsidyLog('✓ 积分: ' + subsidyPoints);
+        var subsidyCost = isShequn
+          ? (parseFloat(item.subsidy) || 0)                 // 社群：直接填元（面板补贴金额原值）
+          : Math.round((parseFloat(item.subsidy) || 0) * 10); // 其他：×10 转积分
+        setInputValue(subsidyField, String(subsidyCost));
+        subsidyLog('✓ 补贴: ' + subsidyCost);
       }
 
       // 15. 复审时间
-      var reviewField = document.querySelector('input[placeholder="复审时间"]');
-      if (reviewField) setInputValue(reviewField, dates.reviewTimeStr);
+      var reviewField = isShequn
+        ? (document.querySelector('input[name="scheduled_subsidy_manual_check_time"]') || document.querySelector('input[placeholder="复审时间"]'))
+        : document.querySelector('input[placeholder="复审时间"]');
+      if (reviewField) setDateTimeField(reviewField, dates.reviewTimeStr);
 
       // 16. 返补贴时间
+      // 社群用 name 精准定位，非社群按文字遍历查找
       var rewardField = null;
-      var allEls = document.querySelectorAll('div, td, span, label, p');
-      for (var di = 0; di < allEls.length; di++) {
-        var el = allEls[di];
-        if (el.querySelector('input, textarea, select, iframe')) continue;
-        var elText = (el.textContent || '').trim();
-        if (elText.indexOf('返补贴时间') >= 0 && elText.length < 40) {
-          var sibInput = el.nextElementSibling;
-          if (sibInput && sibInput.tagName === 'INPUT') { rewardField = sibInput; break; }
-          var parentEl = el.parentElement;
-          if (parentEl) {
-            var inputs = parentEl.querySelectorAll(':scope > input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])');
-            if (inputs.length === 0) inputs = parentEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])');
-            for (var ii = 0; ii < inputs.length; ii++) {
-              var iPlaceholder = inputs[ii].placeholder || '';
-              if (iPlaceholder.indexOf('用于') >= 0 || iPlaceholder.indexOf('表单') >= 0 || iPlaceholder.indexOf('复审') >= 0) continue;
-              if (inputs[ii] !== nameField && inputs[ii] !== reviewField && inputs[ii] !== goodsTitleField && inputs[ii] !== roiField) { rewardField = inputs[ii]; break; }
+      if (isShequn) {
+        rewardField = document.querySelector('input[name="activity_subsidy_time"]');
+      } else {
+        var allEls = document.querySelectorAll('div, td, span, label, p');
+        for (var di = 0; di < allEls.length; di++) {
+          var el = allEls[di];
+          if (el.querySelector('input, textarea, select, iframe')) continue;
+          var elText = (el.textContent || '').trim();
+          if (elText.indexOf('返补贴时间') >= 0 && elText.length < 40) {
+            var sibInput = el.nextElementSibling;
+            if (sibInput && sibInput.tagName === 'INPUT') { rewardField = sibInput; break; }
+            var parentEl = el.parentElement;
+            if (parentEl) {
+              var inputs = parentEl.querySelectorAll(':scope > input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])');
+              if (inputs.length === 0) inputs = parentEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"])');
+              for (var ii = 0; ii < inputs.length; ii++) {
+                var iPlaceholder = inputs[ii].placeholder || '';
+                if (iPlaceholder.indexOf('用于') >= 0 || iPlaceholder.indexOf('表单') >= 0 || iPlaceholder.indexOf('复审') >= 0) continue;
+                if (inputs[ii] !== nameField && inputs[ii] !== reviewField && inputs[ii] !== goodsTitleField && inputs[ii] !== roiField) { rewardField = inputs[ii]; break; }
+              }
+              if (rewardField) break;
             }
-            if (rewardField) break;
           }
         }
       }
       if (rewardField) { setDateTimeField(rewardField, dates.rewardTimeStr); subsidyLog('✓ 返补贴时间'); }
 
-      // 17. 邮箱 - 从GM存储读取
+      // 17. 邮箱
       var savedEmail = GM_getValue('tuopin_selected_email', '');
       if (savedEmail) {
         var emailField = document.querySelector('input[placeholder*="英文逗号隔开"]');
@@ -2986,55 +3317,180 @@
       }
       await sleep(200);
 
-      // 18. 活动规则 - 自动生成
-      var autoGenBtns = document.querySelectorAll('button');
-      var genCount = 0;
-      for (var gi = 0; gi < autoGenBtns.length; gi++) {
-        if ((autoGenBtns[gi].textContent || '').trim() === '自动生成') {
-          genCount++;
-          if (genCount === 1) { autoGenBtns[gi].click(); subsidyLog('✓ 活动规则'); break; }
-        }
-      }
+      // 字段填写完成。活动规则移到最后(下一步之前)执行，确保补贴金额/最低支付等字段已就绪，
+      // generateActivityRules() 才能生成完整内容(之前失败是点太早、字段不全)。
+      subsidyMon('S17_FIELDS_DONE_BEFORE_ACTRULE', snapState());
+      if (!tokenValid()) { subsidyMon('ABORT_STALE', { at: 'before_actrule' }); return; }
 
       await sleep(300);
 
-      // 19. 下单要求 - 插入模板
-      var tmplClicked = false;
-      var tmplByTitle = document.querySelectorAll('[title="插入模板"]');
-      if (tmplByTitle.length > 0) { tmplByTitle[0].click(); tmplClicked = true; }
-      if (!tmplClicked) {
-        var allSpans = document.querySelectorAll('span, div, a');
-        for (var ts = 0; ts < allSpans.length; ts++) {
-          if ((allSpans[ts].textContent || '').trim() === '插入模板') { allSpans[ts].click(); tmplClicked = true; break; }
+      // 19-20. 下单要求(插入模板) + 订单审核自动生成 —— 仅 APP+PC+Wap(app-only)才有。
+      // 社群"仅微信小程序"模式下这两个区块是 terminal-scope-app-only 且隐藏，
+      // 若仍去点隐藏的"插入模板"会弹出残留 UEditor 弹窗，干扰随后活动规则的 setContent（表现为活动规则框空白）。
+      // 故社群模式整体跳过。
+      if (!isShequn) {
+        // 19. 下单要求 - 插入模板
+        var tmplClicked = false;
+        var tmplByTitle = document.querySelectorAll('[title="插入模板"]');
+        if (tmplByTitle.length > 0) { tmplByTitle[0].click(); tmplClicked = true; }
+        if (!tmplClicked) {
+          var allSpans = document.querySelectorAll('span, div, a');
+          for (var ts = 0; ts < allSpans.length; ts++) {
+            if ((allSpans[ts].textContent || '').trim() === '插入模板') { allSpans[ts].click(); tmplClicked = true; break; }
+          }
         }
-      }
-      if (tmplClicked) {
-        await sleep(800);
-        var mallPlatform = (item.mall || '').indexOf('京东') >= 0 ? 'jd' : 'taobao';
-        var dialogIframe = document.querySelector('.edui-dialog.edui-for-subsidy iframe, .edui-dialog-content iframe');
-        if (dialogIframe) {
-          try {
-            var iframeDoc = dialogIframe.contentDocument || dialogIframe.contentWindow.document;
-            var platformItems = iframeDoc.querySelectorAll('.platform-item');
-            for (var pi = 0; pi < platformItems.length; pi++) {
-              if (platformItems[pi].dataset.platform === mallPlatform) { platformItems[pi].click(); subsidyLog('✓ 模板: ' + mallPlatform); break; }
-            }
-          } catch (e) {}
+        if (tmplClicked) {
+          await sleep(800);
+          var mallPlatform = (item.mall || '').indexOf('京东') >= 0 ? 'jd' : 'taobao';
+          var dialogIframe = document.querySelector('.edui-dialog.edui-for-subsidy iframe, .edui-dialog-content iframe');
+          if (dialogIframe) {
+            try {
+              var iframeDoc = dialogIframe.contentDocument || dialogIframe.contentWindow.document;
+              var platformItems = iframeDoc.querySelectorAll('.platform-item');
+              for (var pi = 0; pi < platformItems.length; pi++) {
+                if (platformItems[pi].dataset.platform === mallPlatform) { platformItems[pi].click(); subsidyLog('✓ 模板: ' + mallPlatform); break; }
+              }
+            } catch (e) {}
+          }
         }
+
+        await sleep(300);
+
+        // 20. 订单审核自动生成（第二个"自动生成"按钮）
+        subsidyMon('S19_TMPL_DONE', snapState());
+        var autoGenBtns2 = document.querySelectorAll('button');
+        var genCount2 = 0;
+        for (var gi2 = 0; gi2 < autoGenBtns2.length; gi2++) {
+          if ((autoGenBtns2[gi2].textContent || '').trim() === '自动生成') {
+            genCount2++;
+            if (genCount2 === 2) { autoGenBtns2[gi2].click(); subsidyLog('✓ 订单审核'); break; }
+          }
+        }
+        await sleep(500);
+      } else {
+        subsidyLog('社群模式：跳过插入模板/订单审核(app-only区块)');
       }
 
-      await sleep(300);
-
-      // 20. 订单审核 - 自动生成
-      genCount = 0;
-      for (var gi2 = 0; gi2 < autoGenBtns.length; gi2++) {
-        if ((autoGenBtns[gi2].textContent || '').trim() === '自动生成') {
-          genCount++;
-          if (genCount === 2) { autoGenBtns[gi2].click(); subsidyLog('✓ 订单审核'); break; }
-        }
-      }
+      // 18(延后). 活动规则 - runInPage 注入。内部总时长控制在16s内(外层25s)，
+      // 实时把诊断写到 holder 的 data-diag，即使 RUN_TIMEOUT 也能读到卡在哪。
+      // 优先直接遍历 UE.instants 找 activity_rules 对应实例(不只 getEditor)。
+      // 社群场景：a完成→立即提交b时，form页加载完成到此处仅1-2s，UEditor尚未初始化。
+      // 多等2s给UE初始化，确保tryBtn能找到按钮+正确渲染富文本（避免写成HTML源码）。
+      if (isShequn) { await sleep(2000); }
+      if (!tokenValid()) { subsidyMon('ABORT_STALE', { at: 'before_actrule2' }); return; }
+      var actRuleResult = await runInPage([
+        'var __myTok = ' + myToken + ';',
+        'var __h2 = document.getElementById(__RUNID__);',
+        'var _diagArr = [];',
+        'function diag(s){ _diagArr.push(s); if(__h2) __h2.setAttribute("data-diag", _diagArr.join(" | ")); }',
+        'function tokBad(){ return window.__tpFillToken && window.__tpFillToken !== __myTok; }',
+        'function getUE(){',
+        '  try {',
+        '    if (window.UE && window.UE.getEditor) { var e = window.UE.getEditor("activity_rules"); if (e) return e; }',
+        '    if (window.UE && window.UE.instants) { for (var k in window.UE.instants){ var ins=window.UE.instants[k]; if(ins && ins.key==="activity_rules") return ins; } }',
+        '  } catch(e){}',
+        '  return null;',
+        '}',
+        // 找 activity_rules 对应的 UEditor iframe body（编辑区真实内容，不依赖 window.UE）。
+        // 策略：① id=ueditor_0 的 IFRAME；② 扫全部 iframe 找 body[contenteditable]/designMode=on（最可靠，与DOM结构无关）；③ 从 textarea 向上爬到 .edui-editor 容器再找 iframe；④ 向上暴力爬10层。
+        'function getEditorIframeDoc(){',
+        '  try {',
+        '    var f = document.getElementById("ueditor_0");',
+        '    if (f && f.tagName === "IFRAME" && f.contentDocument && f.contentDocument.body) return f.contentDocument;',
+        '    var allIframes = document.querySelectorAll("iframe");',
+        '    for (var ii=0; ii<allIframes.length; ii++){',
+        '      try { var doc=allIframes[ii].contentDocument; if(!doc||!doc.body)continue;',
+        '        if(doc.body.getAttribute("contenteditable")!==null||doc.designMode==="on") return doc;',
+        '      } catch(e){}',
+        '    }',
+        '    var ta = document.getElementById("activity_rules");',
+        '    var box = ta ? ta.closest(".edui-editor, .edui-default") : null;',
+        '    if (box) { var ifr=box.querySelector("iframe"); if(ifr&&ifr.contentDocument&&ifr.contentDocument.body) return ifr.contentDocument; }',
+        '    var node = ta ? ta.parentElement : null;',
+        '    for (var lvl=0; lvl<10 && node; lvl++){',
+        '      var ifr2=node.querySelector("iframe"); if(ifr2&&ifr2.contentDocument&&ifr2.contentDocument.body) return ifr2.contentDocument;',
+        '      node=node.parentElement;',
+        '    }',
+        '  } catch(e){}',
+        '  return null;',
+        '}',
+        // 判断是否已有内容：优先看 UEditor iframe body（真实内容），再看 textarea，再看 window.UE。
+        'function hasContent(){',
+        '  try { var d=getEditorIframeDoc(); if(d && d.body && (d.body.innerText||"").trim().length>0) return true; } catch(e){}',
+        '  try{var ue=getUE();return ue&&ue.hasContents?ue.hasContents():false;}catch(e){return false;}',
+        '}',
+        // 写入活动规则：① UE setContent；② 直接写 iframe body（不写 textarea，避免显示HTML源码）
+        'function trySetContent(){',
+        '  if (typeof generateActivityRules !== "function") return false;',
+        '  var rules = generateActivityRules();',
+        '  if (!rules) return false;',
+        '  var done = false;',
+        '  try { var ue = getUE(); if (ue && typeof ue.setContent === "function") { ue.setContent(rules); done = true; } } catch(e){}',
+        '  try {',
+        '    var d = getEditorIframeDoc();',
+        '    if (d && d.body) { d.body.innerHTML = rules; done = true; }',
+        '  } catch(e){}',
+        '  return done;',
+        '}',
+        'var tries=0;',
+        'function tryDirect(){',
+        '  if (tokBad()) { __done("aborted-stale"); return; }',
+        '  tries++;',
+        '  try {',
+        '    var ue = getUE();',
+        '    var _ifd = getEditorIframeDoc();',
+        '    if (tries === 1) {',
+        '      var _ifAll = document.querySelectorAll("iframe");',
+        '      var _ifInfo = Array.prototype.slice.call(_ifAll).map(function(f,i){',
+        '        try { var doc=f.contentDocument; return i+":id="+f.id+",ce="+(doc&&doc.body?doc.body.getAttribute("contenteditable"):"X")+",dm="+(doc?doc.designMode:"X"); } catch(e){ return i+":err"; }',
+        '      });',
+        '      diag("iframes["+_ifAll.length+"]="+_ifInfo.join(";"));',
+        '    }',
+        '    diag("t"+tries+" ue="+(ue?1:0)+" rdy="+(ue&&ue.isReady?1:0)+" ifr="+(_ifd?1:0)+" gen="+(typeof generateActivityRules));',
+        '    var setOk = trySetContent();',
+        '    diag("t"+tries+" setOk="+setOk);',
+        '    if (setOk) {',
+        '      return setTimeout(function(){',
+        '        if (hasContent()) { __done("ok direct tries=" + tries); return; }',
+        '        diag("t"+tries+" setButEmpty");',
+        '        if (tries < 5) { setTimeout(tryDirect, 500); } else { __done("fail setButEmpty"); }',
+        '      }, 400);',
+        '    }',
+        '  } catch(e) { diag("err:"+e.message); }',
+        '  if (tries < 5) { setTimeout(tryDirect, 500); } else { __done("fail no-iframe tries="+tries); }',
+        '}',
+        // 社群/非社群统一走 tryDirect()。
+        // UE.getEditor 强制初始化，ready 回调后 iframe 已就绪，tryDirect 第一次即成功。
+        'function waitForIframeAndRun(){',
+        '  if (tokBad()) { __done("aborted-stale"); return; }',
+        '  var ifd = getEditorIframeDoc();',
+        '  if (ifd) { diag("iframe ready, start direct"); tryDirect(); return; }',
+        '  diag("no iframe, force init UE via getEditor");',
+        '  try {',
+        '    if (window.UE && window.UE.getEditor) {',
+        '      var ue = window.UE.getEditor("activity_rules");',
+        '      if (ue) {',
+        '        ue.ready(function(){',
+        '          diag("UE ready callback");',
+        '          tryDirect();',
+        '        });',
+        '        return;',
+        '      }',
+        '    }',
+        '  } catch(e){ diag("UE.getEditor err:"+e.message); }',
+        '  diag("UE not available, tryDirect anyway");',
+        '  tryDirect();',
+        '}',
+        'waitForIframeAndRun();'
+      ].join('\n'), 15000);
+      subsidyMon('ACTRULE_RESULT', { result: actRuleResult });
+      subsidyLog(actRuleResult.indexOf('ok') >= 0 ? '✓ 活动规则已填充 (' + actRuleResult + ')' : '⚠ 活动规则: ' + actRuleResult);
+      subsidyMon('AFTER_ACTRULE_SNAP', snapState());
 
       await sleep(500);
+      subsidyMon('S20_ORDERAUDIT_DONE', snapState());
+      // 提交前最终令牌校验：若已有更新的运行接管，本(旧)运行绝不能点下一步提交，否则提交半成品表单
+      if (!tokenValid()) { subsidyMon('ABORT_STALE', { at: 'before_next' }); return; }
 
       // 21. 点击"下一步"按钮，处理"确认下一步"弹窗，等待跳转到字段配置页
       var nextBtn = null;
@@ -3043,6 +3499,8 @@
         if ((allBtns[nb].textContent || '').trim() === '下一步' && allBtns[nb].offsetParent !== null) { nextBtn = allBtns[nb]; break; }
       }
       if (nextBtn) {
+        // 提交前抓一次真实状态：分辨"从没设置成功" vs "设置成功但提交前被清"
+        subsidyMon('BEFORE_NEXT_SNAP', snapState());
         var doNextClick = async function() {
           nextBtn.click();
           subsidyLog('✓ 已点击下一步');
@@ -3189,6 +3647,17 @@
       var fId = fIdMatch ? fIdMatch[1] : '';
       GM_setValue('tuopin_subsidy_saved_formid', fId);
       GM_setValue('tuopin_subsidy_index', subsidyIdx + 1);
+      // 保存表单链接，供面板展示
+      if (fId) {
+        var curItemForUrl = subsidyQueue[subsidyIdx];
+        var formUrl = 'http://biaodan.bgm.smzdm.com/biaodan/form_name/' + fId;
+        if (curItemForUrl && curItemForUrl.articleId) {
+          var formUrlMap = {};
+          try { formUrlMap = JSON.parse(GM_getValue('tuopin_subsidy_form_urls', '{}')); } catch(e) {}
+          formUrlMap[String(curItemForUrl.articleId)] = formUrl;
+          GM_setValue('tuopin_subsidy_form_urls', JSON.stringify(formUrlMap));
+        }
+      }
       // 记录该文章已补贴（供汇总面板状态显示）
       try {
         var doneArr = JSON.parse(GM_getValue('tuopin_subsidy_done', '[]'));
@@ -3307,7 +3776,7 @@
         return;
       }
 
-      // 在表单第一页 → 填写表单（标题、价格、文案等）
+      // 在表单第一页 → 填写表单（社群和非社群均走 fillSubsidyForm，isShequn 分支内部区分）
       if (location.pathname.indexOf('form_name') >= 0 || location.search.indexOf('type=4') >= 0) {
         await fillSubsidyForm(item);
         return;
@@ -3344,6 +3813,7 @@
     return;
   }
   // ===== END 补贴表单逻辑 =====
+
 
   // ===== 内容优化（www.smzdm.com/p/* 文章页）：场景词 → mind-pad 生成 4 条场景提示词 → 图生图 → 图生视频 =====
   if (location.hostname === 'www.smzdm.com' && location.pathname.indexOf('/p/') === 0) {
@@ -4168,6 +4638,8 @@
         panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:10px;width:270px;font-family:-apple-system,sans-serif;font-size:13px;';
         var coIsAdmin = false; // 由 SSO 异步确认是否为 handongxue
         var coActiveTab = GM_getValue('tuopin_active_tab', 'optimize');
+        // 社群补贴仅 handongxue 可见，非管理员若缓存了 shequn tab 则重置为 optimize
+        if (coActiveTab === 'shequn' && GM_getValue('tuopin_my_name', '') !== 'handongxue') coActiveTab = 'optimize';
         // datetime 工具：本地时间字符串转 datetime-local 值
         function coLocalDt(d) {
           var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
@@ -4184,10 +4656,11 @@
           + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
           + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
-          + '<button id="co-tab-btn-sales" style="' + tabStyle('sales') + '">销售数据</button>'
+          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + 'display:none;">社群补贴</button>'
           + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
-          + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
           + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
+          + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
+          + '<button id="co-tab-btn-sales" style="' + tabStyle('sales') + '">销售数据</button>'
           + '</div>'
           + '<div id="co-tab-optimize" style="display:' + (coActiveTab==='optimize' ? 'block' : 'none') + ';">'
           + '<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">'
@@ -4251,6 +4724,31 @@
           + '</div>'
           + '<div id="co-sales-dbids-log" style="font-size:10px;color:#52c41a;margin-top:4px;"></div>'
           + '</div>'
+          + '</div>'
+          // ── 社群补贴 tab ──
+          + '<div id="co-tab-shequn" style="display:' + (coActiveTab==='shequn' ? 'block' : 'none') + ';">'
+          + '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">商品名称</label>'
+          + '<input id="tuopin-shequn-goodsname" type="text" placeholder="自动填充，可编辑" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">商品干净链接</label>'
+          + '<input id="tuopin-shequn-cleanlink" type="text" placeholder="自动填充，可编辑" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div style="display:flex;gap:6px;margin-bottom:6px;">'
+          + '<div style="flex:1;min-width:0;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">补贴金额（元）</label>'
+          + '<input id="tuopin-shequn-amount" type="number" min="0" step="0.1" placeholder="如：3" style="width:100%;padding:5px 4px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div style="flex:1;min-width:0;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">到手总价（元）</label>'
+          + '<input id="tuopin-shequn-totalprice" type="number" min="0" step="0.01" placeholder="总价" style="width:100%;padding:5px 4px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div style="flex:1;min-width:0;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">到手单价（元）</label>'
+          + '<input id="tuopin-shequn-unitprice" type="number" min="0" step="0.01" placeholder="单价" style="width:100%;padding:5px 4px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '</div>'
+          + '<div style="margin-bottom:6px;font-size:11px;line-height:1.8;">'
+          + '<span style="color:#666;">佣比：</span><span id="shequn-comm-rate" style="color:#52c41a;font-weight:600;">-</span>'
+          + '<span style="color:#666;margin-left:12px;">订单佣金：</span><span id="shequn-comm-amt" style="color:#52c41a;font-weight:600;">-</span>'
+          + '</div>'
+          + '<div style="margin-bottom:6px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">渠道Code</label>'
+          + '<input id="tuopin-shequn-code" type="text" placeholder="请填写code" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<div style="margin-bottom:10px;"><label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">邮箱</label>'
+          + '<input id="tuopin-shequn-email" type="text" placeholder="负责人邮箱" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
+          + '<button id="tuopin-shequn-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">社群补贴</button>'
+          + '<div id="tuopin-shequn-log" style="margin-top:6px;font-size:11px;color:#1890ff;"></div>'
           + '</div>'
           // ── 代码植入 tab ──
           + '<div id="co-tab-inject" style="display:' + (coActiveTab==='inject' ? 'block' : 'none') + ';">'
@@ -4350,6 +4848,8 @@
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
+                var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
+                if (shequnTabBtn) shequnTabBtn.style.display = '';
                 // 从 relay 拉最新权限名单并初始化展示
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
@@ -4359,10 +4859,13 @@
                       var wlList = wd.whitelist || [];
                       GM_setValue('tuopin_task_whitelist', JSON.stringify(wlList));
                       coWlRefresh(wlList);
-                    } catch(e) {}
+                    } catch(e) {
+                      var wlList = [];
+                      try { wlList = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e2) {}
+                      coWlRefresh(wlList);
+                    }
                   },
                   onerror: function() {
-                    // fallback 本地
                     var wlList = [];
                     try { wlList = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
                     coWlRefresh(wlList);
@@ -4719,7 +5222,7 @@
         // Tab 切换
         function coSwitchTab(key) {
           GM_setValue('tuopin_active_tab', key);
-          ['optimize','sales','inject','task'].forEach(function(k) {
+          ['optimize','sales','shequn','inject','task'].forEach(function(k) {
             var body = document.getElementById('co-tab-' + k);
             var btn = document.getElementById('co-tab-btn-' + k);
             if (body) body.style.display = k === key ? 'block' : 'none';
@@ -4737,12 +5240,166 @@
           });
           if (key === 'sales') coLoadSalesData();
         }
-        ['optimize','sales','inject','task'].forEach(function(k) {
+        ['optimize','sales','shequn','inject','task'].forEach(function(k) {
           var btn = document.getElementById('co-tab-btn-' + k);
           if (btn) btn.onclick = function() { coSwitchTab(k); };
         });
         // 若默认 tab 是 sales，立即加载
         if (coActiveTab === 'sales') coLoadSalesData();
+
+        // ── 社群补贴 tab 逻辑 ──
+        (function() {
+          var amtEl = document.getElementById('tuopin-shequn-amount');
+          var totalPriceEl = document.getElementById('tuopin-shequn-totalprice');
+          var unitPriceEl = document.getElementById('tuopin-shequn-unitprice');
+          var goodsNameEl = document.getElementById('tuopin-shequn-goodsname');
+          var cleanLinkEl = document.getElementById('tuopin-shequn-cleanlink');
+          var emailEl = document.getElementById('tuopin-shequn-email');
+          var codeEl = document.getElementById('tuopin-shequn-code');
+          var goBtn = document.getElementById('tuopin-shequn-go');
+          var logEl = document.getElementById('tuopin-shequn-log');
+          var rateEl = document.getElementById('shequn-comm-rate');
+          var amtDisplayEl = document.getElementById('shequn-comm-amt');
+          // 初始化 code 字段
+          if (codeEl) {
+            codeEl.value = GM_getValue('tuopin_subsidy_code', '');
+            codeEl.onblur = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+          }
+
+          // 显示上次创建的表单链接
+          (function showLastFormUrl() {
+            try {
+              var urlMap = JSON.parse(GM_getValue('tuopin_subsidy_form_urls', '{}'));
+              var lastUrl = urlMap[String(CO_ARTICLE_ID)];
+              if (lastUrl && logEl) {
+                logEl.innerHTML = '上次表单: <a href="' + lastUrl + '" target="_blank" style="color:#1890ff;text-decoration:underline;">' + lastUrl + '</a>';
+              }
+            } catch(e) {}
+          })();
+
+          // 实际总价和件数从接口回调填入
+          var pageTotal = 0;
+          var pageQty = 1;
+
+          // 根据实际总价、补贴金额重新计算到手总价/单价
+          function recalcPrices() {
+            var sub = parseFloat((amtEl && amtEl.value) || '0') || 0;
+            var totalAfter = pageTotal > 0 ? Math.round((pageTotal - sub) * 100) / 100 : 0;
+            if (totalPriceEl) totalPriceEl.value = totalAfter > 0 ? totalAfter : '';
+            var unitAfter = (totalAfter > 0 && pageQty > 0) ? Math.round(totalAfter / pageQty * 100) / 100 : 0;
+            if (unitPriceEl) unitPriceEl.value = unitAfter > 0 ? unitAfter : '';
+          }
+
+          // 补贴金额变化时重算
+          if (amtEl) amtEl.addEventListener('input', recalcPrices);
+          var __shequnCommRate = '';
+          var __shequnMall = '';
+          function shequnLog(msg) { if (logEl) logEl.textContent = msg; }
+          // 读取上次邮箱
+          if (emailEl) emailEl.value = GM_getValue('tuopin_selected_email', '');
+          // 查询佣比：通过 article_detail 接口获取商品链接，再查佣比
+          (function queryShequnComm() {
+            if (!CO_ARTICLE_ID) { if (rateEl) { rateEl.textContent = '无文章ID'; rateEl.style.color = '#999'; } return; }
+            if (rateEl) { rateEl.textContent = '查询中...'; rateEl.style.color = '#999'; }
+            GM_xmlhttpRequest({
+              method: 'POST',
+              url: 'http://youhui.bgm.smzdm.com/youhui_action/ajax_get_article_detail',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' },
+              data: 'article_id=' + CO_ARTICLE_ID + '&channel_id=1',
+              timeout: 10000,
+              onload: function(r) {
+                var productUrl = '';
+                try {
+                  var d = JSON.parse(r.responseText);
+                  productUrl = d.article_clean_link || d.article_direct_link || '';
+                  // 自动填充商品名（未手动填写时）
+                  if (goodsNameEl && !goodsNameEl.value && d.article_title) goodsNameEl.value = d.article_title;
+                  // 自动填充干净链接（未手动填写时）
+                  if (cleanLinkEl && !cleanLinkEl.value && productUrl) cleanLinkEl.value = productUrl;
+                  // 从接口取商城名称
+                  if (d.article_mall) __shequnMall = d.article_mall;
+                  // 临时日志：确认 article_mall 原始值
+                  shequnLog('商城字段: article_mall=' + (d.article_mall || '(空)'));
+                  // 从接口取实际总价和件数，赋值后触发重算
+                  var apiTotal = parseFloat(d.article_final_price || '0') || 0;
+                  var apiQty = parseInt(d.article_youhui_num || '1') || 1;
+                  if (apiTotal > 0) { pageTotal = apiTotal; pageQty = apiQty; recalcPrices(); }
+                } catch(e) {}
+                if (!productUrl) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
+                GM_xmlhttpRequest({
+                  method: 'GET',
+                  url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+                  timeout: 15000,
+                  onload: function(resp) {
+                    try {
+                      var data = JSON.parse(resp.responseText || '{}');
+                      if (!data.ok) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
+                      var ratioNum = parseFloat(data.ratioPC);
+                      var ratioPct = isNaN(ratioNum) ? '' : (ratioNum * 100).toFixed(2);
+                      __shequnCommRate = ratioPct || '';
+                      if (rateEl) { rateEl.textContent = ratioPct ? (ratioPct + '%') : '-'; rateEl.style.color = ratioPct ? '#52c41a' : '#999'; }
+                      // 计算订单佣金：从 article_detail 取到手价
+                      try {
+                        var d2 = JSON.parse(r.responseText);
+                        var deal = parseFloat(d2.article_final_price || d2.article_deal_price || '0') || 0;
+                        if (deal > 0 && ratioPct) {
+                          var comm = Math.round(deal * (parseFloat(ratioPct) / 100) * 100) / 100;
+                          if (amtDisplayEl) { amtDisplayEl.textContent = comm.toFixed(2) + '元'; amtDisplayEl.style.color = '#52c41a'; }
+                        }
+                      } catch(e2) {}
+                    } catch(e) { if (rateEl) { rateEl.textContent = '解析失败'; rateEl.style.color = '#ff4d4f'; } }
+                  },
+                  onerror: function() { if (rateEl) { rateEl.textContent = '查询失败'; rateEl.style.color = '#ff4d4f'; } },
+                  ontimeout: function() { if (rateEl) { rateEl.textContent = '查询超时'; rateEl.style.color = '#ff4d4f'; } }
+                });
+              },
+              onerror: function() { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } }
+            });
+          })();
+          if (!goBtn) return;
+          goBtn.onclick = function() {
+            var amt = parseFloat((amtEl && amtEl.value) || '0');
+            var totalPrice = parseFloat((totalPriceEl && totalPriceEl.value) || '0');
+            var email = (emailEl && emailEl.value.trim()) || '';
+            var goodsName = (goodsNameEl && goodsNameEl.value.trim()) || '';
+            var cleanLink = (cleanLinkEl && cleanLinkEl.value.trim()) || '';
+            if (!amt || amt <= 0) { shequnLog('请填写补贴金额'); return; }
+            if (!email) { shequnLog('请填写邮箱'); return; }
+            // 优先用接口返回的商城，fallback 从 cleanLink 域名推断
+            var mallName = __shequnMall || '淘系';
+            if (!__shequnMall && cleanLink) {
+              if (cleanLink.indexOf('jd.com') >= 0) mallName = '京东';
+              else if (cleanLink.indexOf('tmall.com') >= 0 || cleanLink.indexOf('taobao.com') >= 0) mallName = '淘系';
+              else if (cleanLink.indexOf('xiaomi.com') >= 0 || cleanLink.indexOf('mi.com') >= 0 || cleanLink.indexOf('youpin') >= 0) mallName = '小米有品';
+              else if (cleanLink.indexOf('pinduoduo.com') >= 0 || cleanLink.indexOf('pdd.') >= 0) mallName = '拼多多';
+              else if (cleanLink.indexOf('vip.com') >= 0) mallName = '唯品会';
+            }
+            // 保存邮箱
+            GM_setValue('tuopin_selected_email', email);
+            // 构造队列项
+            var queue = [];
+            try { queue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch(e) {}
+            queue.push({
+              type: 'shequn',
+              subsidy: String(amt),
+              email: email,
+              title: goodsName || (CO_ARTICLE_ID ? ('社群补贴-' + CO_ARTICLE_ID) : '社群补贴'),
+              cleanLink: cleanLink,
+              dealPrice: String(totalPrice),
+              price: String(totalPrice),
+              commissionRate: __shequnCommRate || '',
+              articleId: CO_ARTICLE_ID || '',
+              mall: mallName,
+              code: (codeEl ? codeEl.value.trim() : '') || GM_getValue('tuopin_subsidy_code', '')
+            });
+            GM_setValue('tuopin_subsidy_queue', JSON.stringify(queue));
+            GM_setValue('tuopin_subsidy_index', '0');
+            shequnLog('已加入队列，跳转中...');
+            setTimeout(function() {
+              tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
+            }, 800);
+          };
+        })();
 
         // 代码植入 tab 日志
         function injectLog(msg) {
@@ -7194,12 +7851,24 @@
       '<button id="tb-view" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">查看优惠信息</button>' +
       '<button id="tb-publish" style="display:block;width:100%;padding:6px 10px;margin-bottom:8px;border:1px solid #52c41a;border-radius:4px;background:#52c41a;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">去发布</button>' +
       '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:4px;">' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">标签（可多选）</label>' +
+        '<div id="tb-tag-trigger" style="border:1px solid #ddd;border-radius:4px;padding:4px 6px;cursor:pointer;font-size:12px;min-height:22px;display:flex;justify-content:space-between;align-items:center;background:#fff;margin-bottom:4px;">' +
+          '<span id="tb-tag-summary" style="color:#bbb;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">请选择标签</span>' +
+          '<span style="color:#999;font-size:10px;">▾</span>' +
+        '</div>' +
+        '<div id="tb-tag-dropdown" style="display:none;border:1px solid #ddd;border-radius:4px;padding:4px;margin-top:2px;max-height:120px;overflow-y:auto;font-size:11px;line-height:1.6;background:#fff;"></div>' +
+        '<div style="display:flex;gap:4px;margin-top:4px;">' +
+          '<input id="tb-tag-input" type="text" placeholder="添加标签，如今日必买" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
+          '<button id="tb-tag-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
+        '</div></div>' +
         '<div style="font-size:11px;color:#999;margin-bottom:4px;">表单邮箱</div>' +
         '<select id="tb-email-select" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;"><option value="">请选择邮箱</option></select>' +
         '<div style="display:flex;gap:4px;margin-bottom:8px;">' +
           '<input id="tb-email-input" type="text" placeholder="添加邮箱" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
           '<button id="tb-email-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
         '</div>' +
+        '<div style="font-size:11px;color:#999;margin-bottom:4px;">渠道Code</div>' +
+        '<input id="tb-code" type="text" placeholder="请填写code" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:8px;box-sizing:border-box;">' +
         '<div style="font-size:11px;color:#999;margin-bottom:4px;">发布账号</div>' +
         '<select id="tb-account-select" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;"><option value="">请选择账号</option></select>' +
         '<div style="display:flex;gap:4px;">' +
@@ -7231,6 +7900,89 @@
       header.style.marginBottom = nowCollapsed ? '8px' : '0';
       GM_setValue('tuopin_tb_collapsed', nowCollapsed ? '' : '1');
     };
+
+    // 标签管理（多选，与编辑后台/JD 面板共用 tuopin_tag_list / tuopin_selected_tags）
+    function tbLoadTags() { try { return JSON.parse(GM_getValue('tuopin_tag_list', '[]')); } catch(e) { return []; } }
+    function tbSaveTags(list) { GM_setValue('tuopin_tag_list', JSON.stringify(list)); }
+    function tbLoadSelTags() { try { return JSON.parse(GM_getValue('tuopin_selected_tags', '[]')); } catch(e) { return []; } }
+    function tbSaveSelTags(list) { GM_setValue('tuopin_selected_tags', JSON.stringify(list)); }
+    function tbRefreshTagSelect() {
+      var box = document.getElementById('tb-tag-dropdown');
+      if (!box) return;
+      var tags = tbLoadTags();
+      var selected = tbLoadSelTags();
+      box.innerHTML = '';
+      if (!tags.length) { box.innerHTML = '<span style="color:#bbb;">暂无标签，请在下方添加</span>'; }
+      else {
+        tags.forEach(function(tg) {
+          var lbl = document.createElement('label');
+          lbl.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;padding:2px 0;';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.value = tg;
+          cb.checked = selected.indexOf(tg) >= 0;
+          cb.onchange = function() {
+            var cur = tbLoadSelTags();
+            if (this.checked) { if (cur.indexOf(tg) < 0) cur.push(tg); }
+            else { cur = cur.filter(function(x) { return x !== tg; }); }
+            tbSaveSelTags(cur);
+            tbUpdateTagSummary();
+          };
+          lbl.appendChild(cb);
+          var span = document.createElement('span'); span.textContent = tg;
+          span.style.cssText = 'flex:1;';
+          lbl.appendChild(span);
+          var del = document.createElement('span');
+          del.textContent = '×';
+          del.style.cssText = 'cursor:pointer;color:#ff4d4f;font-size:13px;line-height:1;padding:0 4px;';
+          del.title = '删除标签';
+          del.onclick = function(e) {
+            e.preventDefault(); e.stopPropagation();
+            if (!confirm('删除标签「' + tg + '」？')) return;
+            tbSaveTags(tbLoadTags().filter(function(x) { return x !== tg; }));
+            tbSaveSelTags(tbLoadSelTags().filter(function(x) { return x !== tg; }));
+            tbRefreshTagSelect();
+          };
+          lbl.appendChild(del);
+          box.appendChild(lbl);
+        });
+      }
+      tbUpdateTagSummary();
+    }
+    function tbUpdateTagSummary() {
+      var summary = document.getElementById('tb-tag-summary');
+      if (!summary) return;
+      var selected = tbLoadSelTags();
+      summary.textContent = selected.length ? selected.join('、') : '请选择标签';
+      summary.style.color = selected.length ? '#333' : '#bbb';
+    }
+    (function() {
+      var trigger = document.getElementById('tb-tag-trigger');
+      var dropdown = document.getElementById('tb-tag-dropdown');
+      if (trigger && dropdown) {
+        trigger.onclick = function(e) {
+          e.stopPropagation();
+          dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+        };
+        document.addEventListener('click', function(e) {
+          if (!dropdown.contains(e.target) && !trigger.contains(e.target)) {
+            dropdown.style.display = 'none';
+          }
+        });
+      }
+      var addBtn = document.getElementById('tb-tag-add');
+      if (addBtn) addBtn.onclick = function() {
+        var input = document.getElementById('tb-tag-input');
+        var tag = (input.value || '').trim();
+        if (!tag) { alert('请输入标签'); return; }
+        var list = tbLoadTags();
+        if (list.indexOf(tag) < 0) { list.push(tag); tbSaveTags(list); }
+        var sel = tbLoadSelTags();
+        if (sel.indexOf(tag) < 0) { sel.push(tag); tbSaveSelTags(sel); }
+        tbRefreshTagSelect();
+        input.value = '';
+      };
+      tbRefreshTagSelect();
+    })();
 
     // 邮箱管理逻辑（GM_setValue 绑定本机）
     function loadEmails() {
@@ -7266,6 +8018,14 @@
       refreshEmailSelect();
       input.value = '';
     };
+
+    // 渠道Code 初始化
+    var tbCodeEl = document.getElementById('tb-code');
+    if (tbCodeEl) {
+      tbCodeEl.value = GM_getValue('tuopin_subsidy_code', '');
+      tbCodeEl.onchange = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+      tbCodeEl.onblur = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+    }
 
     // 发布账号管理逻辑
     function loadAccounts() {
@@ -7665,7 +8425,8 @@
           commissionRate: item.commission_rate || '',
           goodsSign: item.goodsSign || '',
           mall: item.mall || '淘宝',
-          bDuan: item.bDuan || ''
+          bDuan: item.bDuan || '',
+          code: GM_getValue('tuopin_subsidy_code', '')
         };
       });
       GM_setValue('tuopin_publish_queue', JSON.stringify(queue));
@@ -7692,6 +8453,8 @@
         inj();
         if (!document.getElementById('tuopin-toolbar')) ctb();
       }
+      // JD 页面也监听 DOM 变化注入 checkbox
+      if (jdIsJDPage()) { jdInj(); jdCtb(); }
     }, 300);
   }).observe(document.body, { childList: true, subtree: true });
 
@@ -7699,14 +8462,719 @@
   window.addEventListener('scroll', function() {
     clearTimeout(scrollTmr);
     scrollTmr = setTimeout(function() {
-      inj();
-      uc();
+      if (jdIsJDPage()) { jdInj(); jdUc(); }
+      else { inj(); uc(); }
     }, 200);
   }, true);
 
   function ti() {
     if (document.querySelector('.goodsLayoutGutter')) { inj(); ctb(); }
+    else if (jdIsJDPage()) { jdInj(); jdCtb(); }
     else setTimeout(ti, 500);
   }
   ti();
+
+  // ===== JD 商品采集 =====
+  var JD_K = 'tuopin_jd_selected';
+  var JD_F = '__tuopin_jd_inited__';
+
+  function jdIsJDPage() {
+    return /search\.jd\.com|list\.jd\.com/.test(location.hostname);
+  }
+
+  function jdLd() {
+    try { return JSON.parse(localStorage.getItem(JD_K) || '[]'); }
+    catch (e) { return []; }
+  }
+
+  function jdSv(ids) {
+    localStorage.setItem(JD_K, JSON.stringify(ids));
+  }
+
+  function jdGi() {
+    return Array.from(document.querySelectorAll('[data-sku]'));
+  }
+
+  function jdGid(el) {
+    return el.getAttribute('data-sku') || '';
+  }
+
+  function jdHl(el, on) {
+    if (on) {
+      el.style.outline = '3px solid #ff7a00';
+      el.style.outlineOffset = '-3px';
+      el.style.borderRadius = '4px';
+      el.style.background = '#fff7e6';
+    } else {
+      el.style.outline = '';
+      el.style.outlineOffset = '';
+      el.style.borderRadius = '';
+      el.style.background = '';
+    }
+  }
+
+  function jdGetInfo(el) {
+    var sku = jdGid(el);
+    var titleEl = el.querySelector('[title]');
+    var title = titleEl ? (titleEl.getAttribute('title') || titleEl.getAttribute('alt') || '') : '';
+    var text = (el.textContent || '').trim();
+    var priceMatch = text.match(/¥\s*([\d.]+)/);
+    var price = priceMatch ? priceMatch[1] : '';
+    // 店铺
+    var shop = '';
+    var shopMatch = text.match(/([^\s|¥\d]+(?:京东)?(?:自营旗舰店|旗舰店|专卖店|专营店))/);
+    if (shopMatch) shop = shopMatch[1];
+    // 销量/热度
+    var sales = '';
+    var salesMatch = text.match(/(?:已售\s*\d+[万+]?\s*\+?|\d+[万+]?\s*\+\s*(?:人已买|人种草|人复购))/);
+    if (salesMatch) sales = salesMatch[0];
+    // 图片
+    var imgEl = el.querySelector('img');
+    var img = imgEl ? (imgEl.getAttribute('data-src') || imgEl.getAttribute('src') || '') : '';
+    if (img && img.startsWith('//')) img = 'https:' + img;
+    // 商品链接
+    var link = 'https://item.jd.com/' + sku + '.html';
+    return { sku: sku, title: title, price: price, shop: shop, sales: sales, img: img, link: link };
+  }
+
+  function jdInj() {
+    var ids = jdLd();
+    jdGi().forEach(function (item) {
+      var id = jdGid(item);
+      // 已有 checkbox：只更新状态
+      if (item.dataset.tuopinJd) {
+        var cb = item.querySelector('.tuopin-jd-checkbox');
+        if (cb) cb.checked = id && ids.indexOf(id) >= 0;
+        jdHl(item, id && ids.indexOf(id) >= 0);
+        return;
+      }
+      item.dataset.tuopinJd = '1';
+      item.style.position = 'relative';
+
+      var id = jdGid(item);
+      var checked = id && ids.indexOf(id) >= 0;
+      if (checked) jdHl(item, true);
+
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'tuopin-jd-checkbox';
+      cb.checked = checked;
+      cb.style.cssText = 'position:absolute;top:4px;left:4px;z-index:99;width:16px;height:16px;cursor:pointer;accent-color:#ff7a00;';
+      cb.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var id = jdGid(item);
+        if (!id) return;
+        var ids = jdLd(), idx = ids.indexOf(id);
+        if (cb.checked) {
+          if (idx === -1) ids.push(id);
+          jdHl(item, true);
+        } else {
+          if (idx !== -1) ids.splice(idx, 1);
+          jdHl(item, false);
+        }
+        jdSv(ids);
+        jdUc();
+      });
+      item.appendChild(cb);
+    });
+  }
+
+  function jdUc() {
+    var el = document.getElementById('tuopin-jd-count');
+    if (el) el.textContent = '(' + jdLd().length + ')';
+  }
+
+  function jdCtb() {
+    if (document.getElementById('tuopin-jd-toolbar')) return;
+    var t = document.createElement('div');
+    t.id = 'tuopin-jd-toolbar';
+    var tbCollapsed = GM_getValue('tuopin_jd_tb_collapsed', '') === '1';
+    t.innerHTML = '<div style="font-size:14px;font-weight:600;color:#333;border-bottom:' + (tbCollapsed ? 'none' : '1px solid #eee') + ';padding-bottom:' + (tbCollapsed ? '0' : '8px') + ';margin-bottom:' + (tbCollapsed ? '0' : '8px') + ';display:flex;align-items:center;justify-content:space-between;cursor:pointer;" id="jd-tb-header">' +
+      '<span>拓品助手-JD <span id="tuopin-jd-count" style="color:#ff7a00;">(0)</span></span>' +
+      '<span id="jd-tb-toggle" style="font-size:11px;color:#999;margin-left:6px;">' + (tbCollapsed ? '▶' : '▼') + '</span>' +
+      '</div>' +
+      '<div id="jd-tb-body" style="display:' + (tbCollapsed ? 'none' : 'block') + ';">' +
+      '<button id="jd-tb-all" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ddd;border-radius:4px;background:#f8f9fa;font-size:13px;cursor:pointer;text-align:left;">全选本页</button>' +
+      '<button id="jd-tb-none" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ddd;border-radius:4px;background:#f8f9fa;font-size:13px;cursor:pointer;text-align:left;">取消全选</button>' +
+      '<button id="jd-tb-get" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #ff4757;border-radius:4px;background:#ff4757;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">获取选中商品</button>' +
+      '<button id="jd-tb-view" style="display:block;width:100%;padding:6px 10px;margin-bottom:4px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">查看优惠信息</button>' +
+      '<button id="jd-tb-publish" style="display:block;width:100%;padding:6px 10px;margin-bottom:8px;border:1px solid #52c41a;border-radius:4px;background:#52c41a;color:#fff;font-size:13px;cursor:pointer;text-align:left;font-weight:500;">去发布</button>' +
+      '<div style="display:flex;justify-content:flex-end;margin-top:4px;margin-bottom:4px;">' +
+      '<span id="jd-tb-cog" style="cursor:pointer;color:#999;font-size:12px;">⚙ 京东API</span></div>' +
+      '<div id="jd-tb-settings" style="display:none;margin-bottom:8px;padding:8px;background:#f9f9f9;border-radius:6px;">' +
+        '<input id="jd-tb-channel" type="text" placeholder="channel_id" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;margin-bottom:4px;">' +
+        '<input id="jd-tb-apikey" type="password" placeholder="X-Bgm-Api-Key" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;box-sizing:border-box;margin-bottom:4px;">' +
+        '<button id="jd-tb-savekey" style="width:100%;padding:5px;background:#1890ff;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;">保存凭证</button>' +
+      '</div>' +
+      '<div style="border-top:1px solid #eee;padding-top:8px;margin-top:4px;">' +
+        '<div style="margin-bottom:4px;"><label style="color:#666;font-size:11px;">标签（可多选）</label>' +
+        '<div id="jd-tb-tag-trigger" style="border:1px solid #ddd;border-radius:4px;padding:4px 6px;cursor:pointer;font-size:12px;min-height:22px;display:flex;justify-content:space-between;align-items:center;background:#fff;margin-bottom:4px;">' +
+          '<span id="jd-tb-tag-summary" style="color:#bbb;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">请选择标签</span>' +
+          '<span style="color:#999;font-size:10px;">▾</span>' +
+        '</div>' +
+        '<div id="jd-tb-tag-dropdown" style="display:none;border:1px solid #ddd;border-radius:4px;padding:4px;margin-top:2px;max-height:120px;overflow-y:auto;font-size:11px;line-height:1.6;background:#fff;"></div>' +
+        '<div style="display:flex;gap:4px;margin-top:4px;">' +
+          '<input id="jd-tb-tag-input" type="text" placeholder="添加标签，如今日必买" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
+          '<button id="jd-tb-tag-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
+        '</div></div>' +
+        '<div style="font-size:11px;color:#999;margin-bottom:4px;">表单邮箱</div>' +
+        '<select id="jd-tb-email-select" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;"><option value="">请选择邮箱</option></select>' +
+        '<div style="display:flex;gap:4px;margin-bottom:8px;">' +
+          '<input id="jd-tb-email-input" type="text" placeholder="添加邮箱" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
+          '<button id="jd-tb-email-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
+        '</div>' +
+        '<div style="font-size:11px;color:#999;margin-bottom:4px;">发布账号</div>' +
+        '<select id="jd-tb-account-select" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;margin-bottom:4px;"><option value="">请选择账号</option></select>' +
+        '<div style="display:flex;gap:4px;">' +
+          '<input id="jd-tb-account-input" type="text" placeholder="添加账号" style="flex:1;padding:4px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;min-width:0;">' +
+          '<button id="jd-tb-account-add" style="padding:4px 8px;font-size:11px;border:1px solid #1890ff;border-radius:4px;background:#1890ff;color:#fff;cursor:pointer;white-space:nowrap;">添加</button>' +
+        '</div>' +
+        '<div style="margin-top:8px;">' +
+          '<div style="font-size:11px;color:#999;margin-bottom:4px;">是否在已有文章补贴</div>' +
+          '<select id="jd-tb-subsidy-existing" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid #ddd;border-radius:4px;">' +
+            '<option value="no">否</option>' +
+            '<option value="yes">是</option>' +
+          '</select>' +
+        '</div>' +
+      '</div>' +
+      '</div>';
+    t.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;width:170px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
+    document.body.appendChild(t);
+
+    // 折叠/展开
+    document.getElementById('jd-tb-header').onclick = function() {
+      var body = document.getElementById('jd-tb-body');
+      var toggle = document.getElementById('jd-tb-toggle');
+      var header = document.getElementById('jd-tb-header');
+      var nowCollapsed = body.style.display === 'none';
+      body.style.display = nowCollapsed ? 'block' : 'none';
+      toggle.textContent = nowCollapsed ? '▼' : '▶';
+      header.style.borderBottom = nowCollapsed ? '1px solid #eee' : 'none';
+      header.style.paddingBottom = nowCollapsed ? '8px' : '0';
+      header.style.marginBottom = nowCollapsed ? '8px' : '0';
+      GM_setValue('tuopin_jd_tb_collapsed', nowCollapsed ? '' : '1');
+    };
+
+    // 全选
+    document.getElementById('jd-tb-all').onclick = function() {
+      var allIds = jdGi().map(function(el) { return jdGid(el); }).filter(Boolean);
+      jdSv(allIds);
+      jdInj();
+      jdUc();
+    };
+
+    // 取消全选
+    document.getElementById('jd-tb-none').onclick = function() {
+      jdSv([]);
+      jdInj();
+      jdUc();
+    };
+
+    // 标签管理（多选，与编辑后台发布共用 tuopin_tag_list / tuopin_selected_tags）
+    function jdLoadTags() { try { return JSON.parse(GM_getValue('tuopin_tag_list', '[]')); } catch(e) { return []; } }
+    function jdSaveTags(list) { GM_setValue('tuopin_tag_list', JSON.stringify(list)); }
+    function jdLoadSelTags() { try { return JSON.parse(GM_getValue('tuopin_selected_tags', '[]')); } catch(e) { return []; } }
+    function jdSaveSelTags(list) { GM_setValue('tuopin_selected_tags', JSON.stringify(list)); }
+    function jdRefreshTagSelect() {
+      var box = document.getElementById('jd-tb-tag-dropdown');
+      if (!box) return;
+      var tags = jdLoadTags();
+      var selected = jdLoadSelTags();
+      box.innerHTML = '';
+      if (!tags.length) { box.innerHTML = '<span style="color:#bbb;">暂无标签，请在下方添加</span>'; }
+      else {
+        tags.forEach(function(tg) {
+          var lbl = document.createElement('label');
+          lbl.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;padding:2px 0;';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox'; cb.value = tg;
+          cb.checked = selected.indexOf(tg) >= 0;
+          cb.onchange = function() {
+            var cur = jdLoadSelTags();
+            if (this.checked) { if (cur.indexOf(tg) < 0) cur.push(tg); }
+            else { cur = cur.filter(function(x) { return x !== tg; }); }
+            jdSaveSelTags(cur);
+            jdUpdateTagSummary();
+          };
+          lbl.appendChild(cb);
+          var span = document.createElement('span'); span.textContent = tg;
+          span.style.cssText = 'flex:1;';
+          lbl.appendChild(span);
+          var del = document.createElement('span');
+          del.textContent = '×';
+          del.style.cssText = 'cursor:pointer;color:#ff4d4f;font-size:13px;line-height:1;padding:0 4px;';
+          del.title = '删除标签';
+          del.onclick = function(e) {
+            e.preventDefault(); e.stopPropagation();
+            if (!confirm('删除标签「' + tg + '」？')) return;
+            jdSaveTags(jdLoadTags().filter(function(x) { return x !== tg; }));
+            jdSaveSelTags(jdLoadSelTags().filter(function(x) { return x !== tg; }));
+            jdRefreshTagSelect();
+          };
+          lbl.appendChild(del);
+          box.appendChild(lbl);
+        });
+      }
+      jdUpdateTagSummary();
+    }
+    function jdUpdateTagSummary() {
+      var summary = document.getElementById('jd-tb-tag-summary');
+      if (!summary) return;
+      var selected = jdLoadSelTags();
+      summary.textContent = selected.length ? selected.join('、') : '请选择标签';
+      summary.style.color = selected.length ? '#333' : '#bbb';
+    }
+    (function() {
+      var trigger = document.getElementById('jd-tb-tag-trigger');
+      var dropdown = document.getElementById('jd-tb-tag-dropdown');
+      if (trigger && dropdown) {
+        trigger.onclick = function(e) {
+          e.stopPropagation();
+          dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+        };
+        document.addEventListener('click', function(e) {
+          if (!dropdown.contains(e.target) && !trigger.contains(e.target)) {
+            dropdown.style.display = 'none';
+          }
+        });
+      }
+      var addBtn = document.getElementById('jd-tb-tag-add');
+      if (addBtn) addBtn.onclick = function() {
+        var input = document.getElementById('jd-tb-tag-input');
+        var tag = (input.value || '').trim();
+        if (!tag) { alert('请输入标签'); return; }
+        var list = jdLoadTags();
+        if (list.indexOf(tag) < 0) { list.push(tag); jdSaveTags(list); }
+        var sel = jdLoadSelTags();
+        if (sel.indexOf(tag) < 0) { sel.push(tag); jdSaveSelTags(sel); }
+        jdRefreshTagSelect();
+        input.value = '';
+      };
+      jdRefreshTagSelect();
+    })();
+
+    // 邮箱管理（与淘客共用 GM 存储，邮箱/账号跨页面一致）
+    function loadEmails() { try { return JSON.parse(GM_getValue('tuopin_email_list', '[]')); } catch(e) { return []; } }
+    function saveEmails(list) { GM_setValue('tuopin_email_list', JSON.stringify(list)); }
+    function getSelectedEmail() { return GM_getValue('tuopin_selected_email', ''); }
+    function setSelectedEmail(email) { GM_setValue('tuopin_selected_email', email); }
+    function refreshEmailSelect() {
+      var sel = document.getElementById('jd-tb-email-select');
+      if (!sel) return;
+      var emails = loadEmails();
+      var current = getSelectedEmail();
+      sel.innerHTML = '<option value="">请选择邮箱</option>';
+      emails.forEach(function(em) {
+        var opt = document.createElement('option');
+        opt.value = em; opt.textContent = em;
+        if (em === current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+    refreshEmailSelect();
+    document.getElementById('jd-tb-email-select').onchange = function() { setSelectedEmail(this.value); };
+    document.getElementById('jd-tb-email-add').onclick = function() {
+      var input = document.getElementById('jd-tb-email-input');
+      var email = (input.value || '').trim();
+      if (!email || email.indexOf('@') < 0) { alert('请输入有效邮箱'); return; }
+      var list = loadEmails();
+      if (list.indexOf(email) < 0) { list.push(email); saveEmails(list); }
+      setSelectedEmail(email);
+      refreshEmailSelect();
+      input.value = '';
+    };
+
+    // 发布账号管理
+    function loadAccounts() { try { return JSON.parse(GM_getValue('tuopin_account_list', '[]')); } catch(e) { return []; } }
+    function saveAccounts(list) { GM_setValue('tuopin_account_list', JSON.stringify(list)); }
+    function getSelectedAccount() { return GM_getValue('tuopin_selected_account', ''); }
+    function setSelectedAccount(acc) { GM_setValue('tuopin_selected_account', acc); }
+    function refreshAccountSelect() {
+      var sel = document.getElementById('jd-tb-account-select');
+      if (!sel) return;
+      var accounts = loadAccounts();
+      var current = getSelectedAccount();
+      sel.innerHTML = '<option value="">请选择账号</option>';
+      accounts.forEach(function(acc) {
+        var opt = document.createElement('option');
+        opt.value = acc; opt.textContent = acc;
+        if (acc === current) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+    refreshAccountSelect();
+    document.getElementById('jd-tb-account-select').onchange = function() { setSelectedAccount(this.value); };
+    document.getElementById('jd-tb-account-add').onclick = function() {
+      var input = document.getElementById('jd-tb-account-input');
+      var acc = (input.value || '').trim();
+      if (!acc) { alert('请输入账号'); return; }
+      var list = loadAccounts();
+      if (list.indexOf(acc) < 0) { list.push(acc); saveAccounts(list); }
+      setSelectedAccount(acc);
+      refreshAccountSelect();
+      input.value = '';
+    };
+
+    // 是否补贴
+    var subsidySel = document.getElementById('jd-tb-subsidy-existing');
+    subsidySel.value = GM_getValue('tuopin_subsidy_existing', 'no') || 'no';
+    subsidySel.onchange = function() { GM_setValue('tuopin_subsidy_existing', this.value); };
+
+    // 京东 API 凭证配置（齿轮展开/保存）
+    var jdCog = document.getElementById('jd-tb-cog');
+    var jdSettings = document.getElementById('jd-tb-settings');
+    var jdChannelInput = document.getElementById('jd-tb-channel');
+    var jdApikeyInput = document.getElementById('jd-tb-apikey');
+    jdChannelInput.value = GM_getValue('jd_api_channel_id', '') || '';
+    jdApikeyInput.value = GM_getValue('jd_api_key', '') || '';
+    jdCog.onclick = function() { jdSettings.style.display = jdSettings.style.display === 'none' ? 'block' : 'none'; };
+    document.getElementById('jd-tb-savekey').onclick = function() {
+      GM_setValue('jd_api_channel_id', (jdChannelInput.value || '').trim());
+      GM_setValue('jd_api_key', (jdApikeyInput.value || '').trim());
+      this.textContent = '已保存'; this.style.background = '#52c41a';
+      setTimeout(function() { var b = document.getElementById('jd-tb-savekey'); b.textContent = '保存凭证'; b.style.background = '#1890ff'; }, 1500);
+    };
+
+    // 获取选中商品：调京东 keywordSearch API 补全券后价/优惠券/佣金
+    document.getElementById('jd-tb-get').onclick = function() {
+      var btn = this;
+      var channelId = GM_getValue('jd_api_channel_id', '') || '';
+      var apiKey = GM_getValue('jd_api_key', '') || '';
+      if (!channelId || !apiKey) { alert('请先在⚙京东API中填写 channel_id 和 X-Bgm-Api-Key'); jdSettings.style.display = 'block'; return; }
+      var ids = jdLd();
+      if (!ids.length) { alert('请先勾选商品'); return; }
+      btn.textContent = '获取中...'; btn.disabled = true;
+
+      // 收集每个勾选商品的标题/SKU/链接/页面价格
+      var cards = jdGi();
+      var infoMap = {};
+      cards.forEach(function(card) { var info = jdGetInfo(card); infoMap[info.sku] = info; });
+      var queries = ids.map(function(id) {
+        var info = infoMap[id] || { sku: id, link: 'https://item.jd.com/' + id + '.html' };
+        // 用商品标题作为搜索关键词，截短避免过长
+        var kw = (info.title || '').slice(0, 40) || id;
+        return { id: id, info: info, keyword: kw };
+      });
+
+      function jdApiQuery(keyword, cb) {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: 'http://youhui.bgm.smzdm.com/skill/keywordSearch',
+          headers: { 'Content-Type': 'application/json', 'X-Bgm-Api-Key': apiKey },
+          data: JSON.stringify({ source: 'jd', keyword: keyword, channel_id: channelId, page_index: 1, page_size: 50, sortName: 'price' }),
+          timeout: 30000,
+          onload: function(r) {
+            try {
+              var j = JSON.parse(r.responseText);
+              if (j.error_code !== 0) { cb(null); return; }
+              var q = JSON.parse(j.data.result.jd_union_open_goods_query_responce.queryResult);
+              cb(q.data || []);
+            } catch(e) { cb(null); }
+          },
+          onerror: function() { cb(null); },
+          ontimeout: function() { cb(null); }
+        });
+      }
+
+      // 计算单个商品叠加到手价（同 category-price-query Skill 逻辑）
+      function jdBestTotal(item) {
+        var pi = item.priceInfo || {};
+        var orig = parseFloat(pi.price || '99999999');
+        var coupons = (item.couponInfo || {}).couponList || [];
+        var current = orig;
+        var pct = coupons.filter(function(c) { return c.couponStyle === 3; });
+        if (pct.length) current = Math.round(current * Math.min.apply(null, pct.map(function(c) { return c.discount; })) * 100) / 100;
+        var fixed = coupons.filter(function(c) { return c.couponStyle === 0 || c.couponStyle === 4; });
+        if (fixed.length) {
+          var applicable = fixed.filter(function(c) { return current >= (c.quota || 0); });
+          if (applicable.length) current = Math.round((current - Math.max.apply(null, applicable.map(function(c) { return c.discount; }))) * 100) / 100;
+        }
+        var calc = Math.max(current, 0.01);
+        var couponPrice = parseFloat(pi.lowestCouponPrice || orig);
+        var ppi = item.purchasePriceInfo || {};
+        var purchasePrice = parseFloat(ppi.purchasePrice || '0');
+        var candidates = [calc, couponPrice, purchasePrice].filter(function(p) { return p > 0; });
+        return candidates.length ? Math.min.apply(null, candidates) : orig;
+      }
+
+      // 逐条查询（避免并发触发风控）
+      var results = [];
+      var idx = 0;
+      function next() {
+        if (idx >= queries.length) {
+          localStorage.setItem('tuopin_selected_data', JSON.stringify(results, null, 2));
+          btn.textContent = '已获取 ' + results.length + ' 件';
+          btn.disabled = false;
+          setTimeout(function() { btn.textContent = '获取选中商品'; }, 2000);
+          return;
+        }
+        var q = queries[idx++];
+        jdApiQuery(q.keyword, function(items) {
+          btn.textContent = '获取中(' + idx + '/' + queries.length + ')';
+          var picked = null;
+          // 优先按 SKU 精确匹配，否则取最便宜的
+          if (items && items.length) {
+            picked = items.filter(function(it) { return String(it.spuid || it.skuId || '') === String(q.id); })[0] || items[0];
+          }
+          var info = q.info;
+          if (picked) {
+            var dealPrice = jdBestTotal(picked);
+            var qtyNum = 1;
+            var qm = info.title ? info.title.match(/(\d+)\s*(?:件|支|袋|包|罐|瓶|听|盒)/) : null;
+            if (qm) qtyNum = parseInt(qm[1]) || 1;
+            var unitPrice = qtyNum > 1 ? (dealPrice / qtyNum).toFixed(2) : dealPrice.toFixed(2);
+            var pi = picked.priceInfo || {};
+            var origPrice = parseFloat(pi.price || '0') || 0;
+            var lowestCouponPrice = parseFloat(pi.lowestCouponPrice || '0') || 0;
+            var ppi = picked.purchasePriceInfo || {};
+            var purchasePrice = parseFloat(ppi.purchasePrice || '0') || 0;
+            var coupons = (picked.couponInfo || {}).couponList || [];
+            // 完整券列表（用于详情展示）
+            var couponListStr = coupons.map(function(c) {
+              var desc = '';
+              if (c.couponStyle === 3) desc = '满减折扣' + (c.discount ? (Math.round(c.discount*1000)/10) + '折' : '');
+              else if (c.couponStyle === 0 || c.couponStyle === 4) desc = '满' + (c.quota||0) + '减' + (c.discount||0);
+              else if (c.couponStyle === 529) desc = '满件折';
+              else desc = '券(style=' + c.couponStyle + ')';
+              return desc;
+            }).join('；');
+            var couponAmt = '', couponCond = '';
+            var fixedC = coupons.filter(function(c) { return c.couponStyle === 0 || c.couponStyle === 4; });
+            if (fixedC.length) {
+              couponAmt = String(Math.max.apply(null, fixedC.map(function(c) { return c.discount; })));
+              couponCond = String(fixedC[0].quota || '');
+            }
+            // 佣金
+            var ci = picked.commissionInfo || {};
+            var commShare = ci.commissionShare || '';   // 佣金比例 %
+            var commAmount = ci.commission || '';       // 佣金金额
+            // API 返回的 SKU 名（用于详情展示，可能与页面标题不同）
+            var apiSkuName = picked.skuName || '';
+            // 优惠文案
+            var parts = [];
+            if (origPrice > dealPrice) parts.push('目前售价' + origPrice + '元');
+            if (couponAmt) parts.push(couponCond ? '使用满' + couponCond + '元减' + couponAmt + '元优惠券' : '使用' + couponAmt + '元优惠券');
+            if (!parts.length) parts.push('到手价' + dealPrice.toFixed(2) + '元');
+            results.push({
+              id: info.sku || q.id,
+              gid: info.sku || q.id,
+              title: info.title || '',
+              apiSkuName: apiSkuName,
+              productLink: info.link,
+              price: unitPrice,
+              original_price: origPrice ? origPrice.toFixed(2) : '',
+              lowestCouponPrice: lowestCouponPrice ? lowestCouponPrice.toFixed(2) : '',
+              purchasePrice: purchasePrice ? purchasePrice.toFixed(2) : '',
+              couponListStr: couponListStr,
+              couponListArr: coupons.map(function(c) {
+                var desc = '';
+                if (c.couponStyle === 3) desc = '满减折扣' + (c.discount ? (Math.round(c.discount*1000)/10) + '折' : '');
+                else if (c.couponStyle === 0 || c.couponStyle === 4) desc = '满' + (c.quota||0) + '减' + (c.discount||0);
+                else if (c.couponStyle === 529) desc = '满件折';
+                else desc = '券(style=' + c.couponStyle + ')';
+                return { desc: desc, link: '' };
+              }),
+              coupon_amount: couponAmt,
+              coupon_condition: couponCond,
+              promoCopy: '',
+              youhuiText: '京东该商品' + parts.join('，') + '，到手价' + dealPrice.toFixed(2) + '元，近期好价，喜欢可入～',
+              subsidy: '', manualTjb: '',
+              dealPrice: dealPrice.toFixed(2),
+              qty: String(qtyNum),
+              commissionRate: commShare,
+              commissionAmount: commAmount,
+              goodsSign: '',
+              mall: '京东', bDuan: ''
+            });
+          } else {
+            // API 未匹配，回退用页面价格
+            var dp = parseFloat(info.price || '0') || 0;
+            results.push({
+              id: info.sku || q.id, gid: info.sku || q.id,
+              title: info.title || '', productLink: info.link,
+              price: dp.toFixed(2), original_price: info.price || '',
+              coupon_amount: '', coupon_condition: '', promoCopy: '',
+              youhuiText: '京东该商品到手价' + dp.toFixed(2) + '元，近期好价，喜欢可入～',
+              subsidy: '', manualTjb: '', dealPrice: dp.toFixed(2), qty: '1',
+              commissionRate: '', goodsSign: '', mall: '京东', bDuan: ''
+            });
+          }
+          next();
+        });
+      }
+      next();
+    };
+
+    // 查看优惠信息：展示 selected_data
+    document.getElementById('jd-tb-view').onclick = function() {
+      jdShowDetail();
+    };
+
+    // 去发布：复用大淘客的 queue 构造 + 开新标签逻辑
+    document.getElementById('jd-tb-publish').onclick = function() {
+      var data = [];
+      try { data = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]'); } catch(e) {}
+      if (!data.length) { alert('请先获取选中商品'); return; }
+      var queue = data.map(function (item) {
+        var dealPrice = parseFloat((item.dealPrice || item.price || '0').replace('元', '')) || 0;
+        var qtyNum = parseInt(item.qty) || 1;
+        var unitPrice = qtyNum > 1 ? (dealPrice / qtyNum).toFixed(2) : dealPrice.toFixed(2);
+        var mall = item.mall || '京东';
+        var origPrice = parseFloat(item.original_price || '0') || 0;
+        var youhuiParts = [];
+        if (origPrice > dealPrice) youhuiParts.push('目前售价' + origPrice + '元');
+        if (item.coupon_amount && parseFloat(item.coupon_amount) > 0) {
+          if (item.coupon_condition) youhuiParts.push('使用满' + item.coupon_condition + '元减' + item.coupon_amount + '元优惠券');
+          else youhuiParts.push('使用' + item.coupon_amount + '元优惠券');
+        }
+        if (!youhuiParts.length) youhuiParts.push('到手价' + dealPrice.toFixed(2) + '元');
+        var youhuiText = mall + '该商品' + youhuiParts.join('，') + '，近期好价，喜欢可入～';
+        return {
+          title: item.title || '',
+          productLink: item.productLink || '',
+          price: unitPrice,
+          original_price: item.original_price || '',
+          coupon_amount: item.coupon_amount || '',
+          coupon_condition: item.coupon_condition || '',
+          promoCopy: item.promoCopy || '',
+          youhuiText: item.youhuiText || youhuiText,
+          subsidy: item.subsidy || '',
+          manualTjb: item.manualTjb || '',
+          gid: item.id || item.gid || '',
+          dealPrice: dealPrice.toFixed(2),
+          qty: String(qtyNum),
+          commissionRate: item.commissionRate || '',
+          goodsSign: item.goodsSign || '',
+          mall: mall,
+          bDuan: item.bDuan || ''
+        };
+      });
+      GM_setValue('tuopin_publish_queue', JSON.stringify(queue));
+      GM_setValue('tuopin_publish_index', 0);
+      GM_setValue('tuopin_publish_results', '[]');
+      GM_setValue('tuopin_summary_closed', '');
+      var seq = (parseInt(GM_getValue(TUOPIN_FLOW_SEQ_KEY, '0'), 10) || 0) + 1;
+      GM_setValue(TUOPIN_FLOW_SEQ_KEY, String(seq));
+      var runId = 's' + seq + 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+      tuopinWriteLock(runId);
+      GM_openInTab('http://youhui.bgm.smzdm.com/add_guonei?tuopin_run=' + encodeURIComponent(runId), { active: false, insert: true });
+    };
+
+    jdUc();
+  }
+
+  // JD 商品详情弹窗
+  function jdShowDetail() {
+    var old = document.getElementById('tuopin-jd-detail');
+    if (old) old.remove();
+    var oldOverlay = document.getElementById('tuopin-jd-detail-overlay');
+    if (oldOverlay) oldOverlay.remove();
+    var data = [];
+    try { data = JSON.parse(localStorage.getItem('tuopin_selected_data') || '[]'); } catch(e) {}
+    if (!data.length) { alert('请先获取选中商品'); return; }
+
+    var overlay = document.createElement('div');
+    overlay.id = 'tuopin-jd-detail-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100000;display:flex;align-items:center;justify-content:center;';
+    document.body.appendChild(overlay);
+
+    var d = document.createElement('div');
+    d.id = 'tuopin-jd-detail';
+    d.style.cssText = 'background:#fff;border-radius:8px;padding:16px;width:600px;max-width:92vw;max-height:85vh;overflow-y:auto;font-family:sans-serif;font-size:12px;box-shadow:0 8px 30px rgba(0,0,0,0.3);';
+    var html = '<div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:10px;"><span style="font-weight:600;color:#333;">JD商品详情（' + data.length + '件）</span><span id="tuopin-jd-detail-close" style="cursor:pointer;color:#999;font-size:18px;">&times;</span></div>';
+    data.forEach(function(item, i) {
+      var origPrice = parseFloat(item.original_price || '0') || 0;
+      var lowest = item.lowestCouponPrice || '—';
+      var purch = item.purchasePrice || '—';
+      var deal = item.dealPrice || item.price || '—';
+      var commRate = item.commissionRate ? (item.commissionRate + '%') : '—';
+      var commAmt = item.commissionAmount || '—';
+      var couponList = item.couponListStr || '无';
+      html += '<div style="border:1px solid #f0f0f0;border-radius:6px;padding:8px;margin-bottom:10px;position:relative;">' +
+        // 商品名称（单行，可编辑）+ 保存 + 删除×
+        '<div style="display:flex;align-items:center;gap:4px;margin-bottom:6px;">' +
+          '<label style="color:#666;font-size:11px;white-space:nowrap;">商品名称</label>' +
+          '<input data-jd-idx="' + i + '" class="jd-detail-title" type="text" value="' + (item.title || '').replace(/"/g,'&quot;') + '" style="flex:1;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;min-width:0;">' +
+          '<button data-jd-idx="' + i + '" class="jd-detail-save-one" style="padding:5px 8px;border:1px solid #ff7a00;border-radius:4px;background:#ff7a00;color:#fff;font-size:11px;cursor:pointer;white-space:nowrap;">保存</button>' +
+          '<span data-jd-idx="' + i + '" class="jd-detail-del" title="删除该商品" style="cursor:pointer;color:#ff4d4f;font-size:18px;line-height:1;padding:0 4px;flex-shrink:0;">×</span>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;color:#666;font-size:11px;line-height:1.7;margin-bottom:6px;">' +
+          '<div>京东原价：<b style="color:#666;">' + (origPrice ? '¥'+origPrice.toFixed(2) : '—') + '</b></div>' +
+          '<div>最终到手价：<b style="color:#ff7a00;">¥' + deal + '</b>' + (item.qty > 1 ? '('+item.qty+'件折¥'+item.price+'/件)' : '') + '</div>' +
+          '<div>佣金比例：<b style="color:#722ed1;">' + commRate + '</b></div>' +
+          '<div>佣金金额：<b style="color:#722ed1;">' + (commAmt === '—' ? '—' : '¥'+commAmt) + '</b></div>' +
+          (function() {
+            var arr = item.couponListArr;
+            // 旧数据没有 couponListArr，从 couponListStr 降级构造
+            if (!arr || !arr.length) {
+              var str = item.couponListStr || '';
+              if (!str || str === '无') return '<div style="grid-column:span 2;">券列表：<span style="color:#333;">无</span></div>';
+              arr = str.split('；').filter(Boolean).map(function(desc) { return { desc: desc, link: '' }; });
+              item.couponListArr = arr;
+            }
+            return '<div style="grid-column:span 4;display:flex;align-items:center;flex-wrap:wrap;gap:6px;"><span style="color:#666;white-space:nowrap;">券列表：</span>' +
+              arr.map(function(c) {
+                if (c.link) {
+                  return '<a href="' + c.link.replace(/"/g,'&quot;') + '" target="_blank" style="color:#1890ff;text-decoration:underline;white-space:nowrap;">' + c.desc + '</a>';
+                } else {
+                  return '<span style="color:#333;white-space:nowrap;">' + c.desc + '</span>';
+                }
+              }).join('<span style="color:#aaa;">；</span>') +
+            '</div>';
+          })() +
+        '</div>' +
+        '<div style="color:#666;font-size:11px;line-height:1.6;margin-bottom:6px;">' +
+          '<div style="color:#1890ff;word-break:break-all;">链接：<a href="' + (item.productLink||'') + '" target="_blank" style="color:#1890ff;">' + (item.productLink||'') + '</a></div>' +
+        '</div>' +
+        '<textarea data-jd-idx="' + i + '" class="jd-detail-copy" rows="2" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:11px;line-height:1.5;resize:vertical;box-sizing:border-box;background:#f6ffed;color:#52c41a;">' + (item.youhuiText || '').replace(/</g,'&lt;') + '</textarea>' +
+      '</div>';
+    });
+    d.innerHTML = html;
+    overlay.appendChild(d);
+
+    function jdSaveData(arr) { localStorage.setItem('tuopin_selected_data', JSON.stringify(arr, null, 2)); }
+
+    document.getElementById('tuopin-jd-detail-close').onclick = function() { d.remove(); overlay.remove(); };
+    overlay.onclick = function(e) { if (e.target === overlay) { d.remove(); overlay.remove(); } };
+    // 单条保存
+    d.querySelectorAll('.jd-detail-save-one').forEach(function(btn) {
+      btn.onclick = function() {
+        var idx = parseInt(btn.getAttribute('data-jd-idx'), 10);
+        var input = d.querySelector('.jd-detail-title[data-jd-idx="' + idx + '"]');
+        if (isNaN(idx) || !data[idx] || !input) return;
+        data[idx].title = input.value;
+        jdSaveData(data);
+        var orig = btn.textContent;
+        btn.textContent = '已保存'; btn.style.background = '#52c41a';
+        setTimeout(function() { btn.textContent = orig; btn.style.background = '#ff7a00'; }, 1200);
+      };
+    });
+    // 单条删除
+    d.querySelectorAll('.jd-detail-del').forEach(function(del) {
+      del.onclick = function() {
+        var idx = parseInt(del.getAttribute('data-jd-idx'), 10);
+        if (isNaN(idx) || !data[idx]) return;
+        if (!confirm('删除该商品？')) return;
+        data.splice(idx, 1);
+        jdSaveData(data);
+        d.remove(); overlay.remove();
+        jdShowDetail(); // 重新渲染
+      };
+    });
+    // 文案失焦（点击空白处）自动保存
+    d.querySelectorAll('.jd-detail-copy').forEach(function(ta) {
+      ta.addEventListener('blur', function() {
+        var idx = parseInt(ta.getAttribute('data-jd-idx'), 10);
+        if (isNaN(idx) || !data[idx]) return;
+        if ((data[idx].youhuiText || '') !== ta.value) {
+          data[idx].youhuiText = ta.value;
+          jdSaveData(data);
+          var orig = ta.style.borderColor;
+          ta.style.borderColor = '#52c41a';
+          setTimeout(function() { ta.style.borderColor = orig; }, 800);
+        }
+      });
+    });
+  }
+  // ===== END JD 商品采集 =====
 })();
