@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.6.5
+// @version      5.6.6
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4325,10 +4325,12 @@
           + '• 商品始终是画面主角，出现在前景或中心\n'
           + '• 严禁改变商品外观、形状、包装、颜色、文字，商品必须与参考图完全一致\n'
           + '• 只描述镜头运动和光影氛围，不描述商品本身发生任何形态变化\n'
+          + '• 不要增加热气、烟雾、蒸汽、火焰等特效，只做镜头的推进/环绕/升降等运镜\n'
           + '• 提示词必须全部用中文，禁止出现任何英文单词或拼音\n'
           + '• 每条 40-70 字，画面感、动态感、空间感强烈\n'
           + '• 单一连贯场景，严禁拼图/多格/分镜\n'
-          + '• 不写品牌名，用品类通用词代替\n\n'
+          + '• 不写品牌名，用品类通用词代替\n'
+          + '• 参考示例风格：低角度镜头缓慢环绕推进，逆光勾勒出每一颗坚果仁的油润轮廓，后方虚化的茶壶与窗边绿植构成纵深层次，金色光尘在空气中浮动，食欲感饱满\n\n'
           + '输出格式（严格遵守，无多余内容）：\n1. <中文提示词1>\n2. <中文提示词2>';
 
         function createAndRun(doneCb, errCb) {
