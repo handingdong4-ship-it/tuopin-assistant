@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.5.6
+// @version      5.5.7
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -4752,7 +4752,7 @@
         var coIsAdmin = false; // 由 SSO 异步确认是否为 handongxue
         var coActiveTab = GM_getValue('tuopin_active_tab', 'optimize');
         // 社群补贴仅 handongxue 可见，非管理员若缓存了 shequn tab 则重置为 optimize
-        if (coActiveTab === 'shequn' && GM_getValue('tuopin_my_name', '') !== 'handongxue') coActiveTab = 'optimize';
+        // if (coActiveTab === 'shequn' && GM_getValue('tuopin_my_name', '') !== 'handongxue') coActiveTab = 'optimize';
         // datetime 工具：本地时间字符串转 datetime-local 值
         function coLocalDt(d) {
           var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
@@ -4769,7 +4769,7 @@
           + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
           + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
-          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + 'display:none;">社群补贴</button>'
+          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + '">社群补贴</button>'
           + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
           + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
           + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
@@ -4952,8 +4952,6 @@
             coIsAdmin = true;
             var adminPanel = document.getElementById('tuopin-task-admin-panel');
             if (adminPanel) adminPanel.style.display = 'block';
-            var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
-            if (shequnTabBtn) shequnTabBtn.style.display = '';
             // 任务白名单用本地缓存提前渲染
             var wlLocal = [];
             try { wlLocal = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
@@ -4984,8 +4982,6 @@
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
-                var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
-                if (shequnTabBtn) shequnTabBtn.style.display = '';
                 // 从 relay 拉最新权限名单并初始化展示
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
