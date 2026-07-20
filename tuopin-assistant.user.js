@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.4.9
+// @version      5.5.6
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2659,6 +2659,53 @@
     try { unsafeWindow.alert = _noop; unsafeWindow.confirm = _noop; } catch(e) {}
     window.alert = _noop; window.confirm = _noop;
 
+    // 列表页加载时，异步补充当天社群记录缺失的小程序链接
+    if (location.pathname.indexOf('subsidies_list') >= 0) {
+      (function patchWxLinks() {
+        var rec = {};
+        try { rec = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+        var lst = rec.list || [];
+        var missing = lst.filter(function(it) {
+          if (it.wxLink) return false;
+          var fid = it.formId || (it.url && it.url.match(/\/(\d+)\/?$/) ? it.url.match(/\/(\d+)\/?$/)[1] : '');
+          return !!fid;
+        });
+        if (!missing.length) return;
+        missing.forEach(function(entry) {
+          var fid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
+          var row = document.querySelector('input[type="checkbox"][value="' + fid + '"]');
+          if (!row) return;
+          var tr = row.closest('tr');
+          if (!tr) return;
+          var btn = tr.querySelector('.copy-wx-shortlink-btn[data-biaodan-key]');
+          if (!btn) return;
+          var key = btn.getAttribute('data-biaodan-key');
+          GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            data: 'biaodan_key=' + key,
+            onload: function(r) {
+              try {
+                var resp = JSON.parse(r.responseText);
+                if (resp && resp.error_code === 0 && resp.data && resp.data.link) {
+                  var rec2 = {};
+                  try { rec2 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+                  var lst2 = rec2.list || [];
+                  for (var k = 0; k < lst2.length; k++) {
+                    var kfid = lst2[k].formId || (lst2[k].url && lst2[k].url.match(/\/(\d+)\/?$/) ? lst2[k].url.match(/\/(\d+)\/?$/)[1] : '');
+                    if (kfid === fid) { lst2[k].wxLink = resp.data.link; if (!lst2[k].formId) lst2[k].formId = fid; break; }
+                  }
+                  rec2.list = lst2;
+                  GM_setValue('tuopin_shequn_today_forms', JSON.stringify(rec2));
+                }
+              } catch(e) {}
+            }
+          });
+        });
+      })();
+    }
+
     var subsidyQueue = [];
     try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
     if (!subsidyQueue.length) return;
@@ -3656,6 +3703,31 @@
           formUrlMap[String(curItemForUrl.articleId)] = formUrl;
           GM_setValue('tuopin_subsidy_form_urls', JSON.stringify(formUrlMap));
         }
+        // 社群补贴：记录当天本地创建的表单（链接+商品名），跨天自动清空
+        if (curItemForUrl && curItemForUrl.type === 'shequn') {
+          try {
+            var todayKey = (function(){ var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;}; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); })();
+            var todayRec = {};
+            try { todayRec = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+            // 跨天清空
+            if (todayRec.date !== todayKey) todayRec = { date: todayKey, list: [] };
+            var lst = todayRec.list || [];
+            // 按 url 去重，避免同表单重复记录
+            var exists = false;
+            for (var i = 0; i < lst.length; i++) { if (lst[i].url === formUrl) { exists = true; break; } }
+            if (!exists) {
+              lst.push({
+                url: formUrl,
+                name: (curItemForUrl.title || '').slice(0, 40),
+                time: (function(){ var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;}; return p(d.getHours())+':'+p(d.getMinutes()); })(),
+                articleId: String(curItemForUrl.articleId || ''),
+                formId: String(fId || '')
+              });
+              todayRec.list = lst;
+              GM_setValue('tuopin_shequn_today_forms', JSON.stringify(todayRec));
+            }
+          } catch(e) {}
+        }
       }
       // 记录该文章已补贴（供汇总面板状态显示）
       try {
@@ -3710,8 +3782,50 @@
       if (progressEl) progressEl.textContent = '处理 ' + (subsidyIdx + 1) + '/' + currentQueue.length + ': ' + (item.title || '').slice(0, 20);
       subsidyLog('文章ID: ' + item.articleId + ' 补贴: ' + item.subsidy + '元');
 
-      // 在列表页 → 点击新建按钮，开始本品的完整流程
+      // 在列表页 → 若社群记录缺小程序链接，逐条补充
       if (location.pathname.indexOf('subsidies_list') >= 0) {
+        try {
+          var todayRec2 = {};
+          try { todayRec2 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+          var lst2 = todayRec2.list || [];
+          var needSave2 = false;
+          for (var wi = 0; wi < lst2.length; wi++) {
+            var entry = lst2[wi];
+            if (entry.wxLink) continue;
+            // formId 优先用存储值，其次从 url 提取
+            var entryFid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
+            if (!entryFid) continue;
+            var bkBtn2 = null;
+            var bkRow2 = document.querySelector('input[type="checkbox"][value="' + entryFid + '"]');
+            if (bkRow2) {
+              var bkTr2 = bkRow2.closest('tr');
+              if (bkTr2) bkBtn2 = bkTr2.querySelector('.copy-wx-shortlink-btn[data-biaodan-key]');
+            }
+            if (!bkBtn2) continue;
+            var bkKey2 = bkBtn2.getAttribute('data-biaodan-key');
+            try {
+              var wxResp2 = await new Promise(function(resolve) {
+                GM_xmlhttpRequest({
+                  method: 'POST',
+                  url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  data: 'biaodan_key=' + bkKey2,
+                  onload: function(r) { try { resolve(JSON.parse(r.responseText)); } catch(e) { resolve(null); } },
+                  onerror: function() { resolve(null); }
+                });
+              });
+              if (wxResp2 && wxResp2.error_code === 0 && wxResp2.data && wxResp2.data.link) {
+                lst2[wi].wxLink = wxResp2.data.link;
+                if (!lst2[wi].formId) lst2[wi].formId = entryFid;
+                needSave2 = true;
+              }
+            } catch(e) {}
+          }
+          if (needSave2) {
+            todayRec2.list = lst2;
+            GM_setValue('tuopin_shequn_today_forms', JSON.stringify(todayRec2));
+          }
+        } catch(e) {}
         subsidyLog('在列表页，查找新建按钮...');
         await sleep(2000);
         // 找到文本含"新建机审补贴购表单"的最内层可点击元素（a / button / .el-button）
@@ -4748,6 +4862,10 @@
           + '<input id="tuopin-shequn-email" type="text" placeholder="负责人邮箱" style="width:100%;padding:5px 6px;border:1px solid #ddd;border-radius:4px;font-size:12px;box-sizing:border-box;"></div>'
           + '<button id="tuopin-shequn-go" style="width:100%;padding:8px;background:#ff7a00;color:#fff;border:none;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;">社群补贴</button>'
           + '<div id="tuopin-shequn-log" style="margin-top:6px;font-size:11px;color:#1890ff;"></div>'
+          + '<div id="tuopin-shequn-today" style="margin-top:8px;border-top:1px dashed #ffcc80;padding-top:6px;">'
+          + '<div style="font-size:10px;color:#ff7a00;font-weight:600;margin-bottom:4px;">今日补贴记录（本地）</div>'
+          + '<div id="tuopin-shequn-today-list" style="max-height:160px;overflow-y:auto;font-size:10px;line-height:1.6;"></div>'
+          + '</div>'
           + '</div>'
           // ── 代码植入 tab ──
           + '<div id="co-tab-inject" style="display:' + (coActiveTab==='inject' ? 'block' : 'none') + ';">'
@@ -5293,6 +5411,102 @@
                 logEl.innerHTML = '上次表单: <a href="' + lastUrl + '" target="_blank" style="color:#1890ff;text-decoration:underline;">' + lastUrl + '</a>';
               }
             } catch(e) {}
+          })();
+
+          // 渲染今日社群补贴记录（本地）
+          function renderShequnToday() {
+            var box = document.getElementById('tuopin-shequn-today-list');
+            if (!box) return;
+            var rec = {};
+            try { rec = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+            var lst = rec.list || [];
+            if (!lst.length) {
+              box.innerHTML = '<div style="color:#bbb;">暂无记录</div>';
+              return;
+            }
+            var html = '';
+            for (var i = lst.length - 1; i >= 0; i--) {
+              var it = lst[i];
+              var safeName = String(it.name || '').replace(/</g, '&lt;');
+              var displayLink = it.wxLink || it.url;
+              var safeLink = String(displayLink || '').replace(/</g, '&lt;');
+              html += '<div style="margin-bottom:5px;padding:4px 5px;background:#fafafa;border-radius:3px;">'
+                + '<div style="color:#333;margin-bottom:2px;">' + safeName + '</div>'
+                + '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+                + '<a href="' + displayLink + '" target="_blank" style="color:#1890ff;text-decoration:none;word-break:break-all;font-size:10px;">' + safeLink + '</a>'
+                + '<span style="color:#bbb;flex-shrink:0;margin-left:6px;font-size:10px;">' + (it.time || '') + '</span>'
+                + '</div></div>';
+            }
+            box.innerHTML = html;
+          }
+          renderShequnToday();
+          // 面板打开时异步补充缺失的小程序链接
+          // 先拉取列表页HTML提取 formId→biaodanKey 映射，再批量调接口
+          (function patchWxLinksFromPanel() {
+            var rec3 = {};
+            try { rec3 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+            var lst3 = rec3.list || [];
+            var missing = lst3.filter(function(it) {
+              if (it.wxLink) return false;
+              var fid = it.formId || (it.url && it.url.match(/\/(\d+)\/?$/) ? it.url.match(/\/(\d+)\/?$/)[1] : '');
+              return !!fid;
+            });
+            if (!missing.length) return;
+            // 拉取列表页HTML，解析 formId→biaodan_key 映射
+            GM_xmlhttpRequest({
+              method: 'GET',
+              url: 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3',
+              onload: function(resp) {
+                // 提取所有 <input type="checkbox" value="FORMID"> 和同行 data-biaodan-key
+                // 列表页结构：checkbox value=formId 和 .copy-wx-shortlink-btn data-biaodan-key 在同一 <tr>
+                // 从HTML文本用正则提取：找每个 <tr>...</tr> 里同时含 checkbox value 和 data-biaodan-key
+                var html = resp.responseText;
+                var fidKeyMap = {};
+                // 匹配 data-biaodan-key="KEY" 附近的 checkbox value="FID"
+                var trReg = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+                var trMatch;
+                while ((trMatch = trReg.exec(html)) !== null) {
+                  var trContent = trMatch[1];
+                  var fidM = trContent.match(/type="checkbox"[^>]*value="(\d+)"/);
+                  var keyM = trContent.match(/data-biaodan-key="([a-f0-9]+)"/);
+                  if (fidM && keyM) fidKeyMap[fidM[1]] = keyM[1];
+                }
+                // 对每条缺失记录查biaodan_key，调接口
+                var pending = 0;
+                missing.forEach(function(entry) {
+                  var fid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
+                  var key = fidKeyMap[fid];
+                  if (!key) return;
+                  pending++;
+                  GM_xmlhttpRequest({
+                    method: 'POST',
+                    url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    data: 'biaodan_key=' + key,
+                    onload: function(r) {
+                      try {
+                        var res = JSON.parse(r.responseText);
+                        if (res && res.error_code === 0 && res.data && res.data.link) {
+                          var rec4 = {};
+                          try { rec4 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+                          var lst4 = rec4.list || [];
+                          for (var k = 0; k < lst4.length; k++) {
+                            var kfid = lst4[k].formId || (lst4[k].url && lst4[k].url.match(/\/(\d+)\/?$/) ? lst4[k].url.match(/\/(\d+)\/?$/)[1] : '');
+                            if (kfid === fid) { lst4[k].wxLink = res.data.link; if (!lst4[k].formId) lst4[k].formId = fid; break; }
+                          }
+                          rec4.list = lst4;
+                          GM_setValue('tuopin_shequn_today_forms', JSON.stringify(rec4));
+                        }
+                      } catch(e) {}
+                      pending--;
+                      if (pending <= 0) renderShequnToday();
+                    },
+                    onerror: function() { pending--; if (pending <= 0) renderShequnToday(); }
+                  });
+                });
+              },
+              onerror: function() {}
+            });
           })();
 
           // 实际总价和件数从接口回调填入
