@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.5.12
+// @version      5.5.0
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -30,7 +30,6 @@
 // @connect      www.smzdm.com
 // @connect      go.smzdm.com
 // @connect      biaodan.bgm.smzdm.com
-// @connect      10.45.147.158
 // @connect      mindpad-bgm.smzdm.com
 // @connect      bi-superset-bgm.smzdm.com
 // @connect      youhui.bgm.smzdm.com
@@ -1741,7 +1740,9 @@
       }
     }
 
-    // 通过 mindpad-bgm.smzdm.com/relay 中转查询 DCC 佣金，内网外网均可访问。
+    // 通过 MindPad /relay/ 中转查询 DCC 佣金。
+    // 走公网域名 mindpad-bgm.smzdm.com/relay（HTTPS），公司网络下均可访问。
+    // relay 侧做公司网段校验，仅公司内网可查。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
       var rateBox = document.getElementById('ds-commission-rate');
@@ -1749,7 +1750,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
+          url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
@@ -2657,53 +2658,6 @@
     var _noop = function(msg) { _lastAlertMsg = String(msg || ''); return true; };
     try { unsafeWindow.alert = _noop; unsafeWindow.confirm = _noop; } catch(e) {}
     window.alert = _noop; window.confirm = _noop;
-
-    // 列表页加载时，异步补充当天社群记录缺失的小程序链接
-    if (location.pathname.indexOf('subsidies_list') >= 0) {
-      (function patchWxLinks() {
-        var rec = {};
-        try { rec = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
-        var lst = rec.list || [];
-        var missing = lst.filter(function(it) {
-          if (it.wxLink) return false;
-          var fid = it.formId || (it.url && it.url.match(/\/(\d+)\/?$/) ? it.url.match(/\/(\d+)\/?$/)[1] : '');
-          return !!fid;
-        });
-        if (!missing.length) return;
-        missing.forEach(function(entry) {
-          var fid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
-          var row = document.querySelector('input[type="checkbox"][value="' + fid + '"]');
-          if (!row) return;
-          var tr = row.closest('tr');
-          if (!tr) return;
-          var btn = tr.querySelector('.copy-wx-shortlink-btn[data-biaodan-key]');
-          if (!btn) return;
-          var key = btn.getAttribute('data-biaodan-key');
-          GM_xmlhttpRequest({
-            method: 'POST',
-            url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            data: 'biaodan_key=' + key,
-            onload: function(r) {
-              try {
-                var resp = JSON.parse(r.responseText);
-                if (resp && resp.error_code === 0 && resp.data && resp.data.link) {
-                  var rec2 = {};
-                  try { rec2 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
-                  var lst2 = rec2.list || [];
-                  for (var k = 0; k < lst2.length; k++) {
-                    var kfid = lst2[k].formId || (lst2[k].url && lst2[k].url.match(/\/(\d+)\/?$/) ? lst2[k].url.match(/\/(\d+)\/?$/)[1] : '');
-                    if (kfid === fid) { lst2[k].wxLink = resp.data.link; if (!lst2[k].formId) lst2[k].formId = fid; break; }
-                  }
-                  rec2.list = lst2;
-                  GM_setValue('tuopin_shequn_today_forms', JSON.stringify(rec2));
-                }
-              } catch(e) {}
-            }
-          });
-        });
-      })();
-    }
 
     var subsidyQueue = [];
     try { subsidyQueue = JSON.parse(GM_getValue('tuopin_subsidy_queue', '[]')); } catch (e) { subsidyQueue = []; }
@@ -3719,8 +3673,7 @@
                 url: formUrl,
                 name: (curItemForUrl.title || '').slice(0, 40),
                 time: (function(){ var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;}; return p(d.getHours())+':'+p(d.getMinutes()); })(),
-                articleId: String(curItemForUrl.articleId || ''),
-                formId: String(fId || '')
+                articleId: String(curItemForUrl.articleId || '')
               });
               todayRec.list = lst;
               GM_setValue('tuopin_shequn_today_forms', JSON.stringify(todayRec));
@@ -3781,50 +3734,8 @@
       if (progressEl) progressEl.textContent = '处理 ' + (subsidyIdx + 1) + '/' + currentQueue.length + ': ' + (item.title || '').slice(0, 20);
       subsidyLog('文章ID: ' + item.articleId + ' 补贴: ' + item.subsidy + '元');
 
-      // 在列表页 → 若社群记录缺小程序链接，逐条补充
+      // 在列表页 → 点击新建按钮，开始本品的完整流程
       if (location.pathname.indexOf('subsidies_list') >= 0) {
-        try {
-          var todayRec2 = {};
-          try { todayRec2 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
-          var lst2 = todayRec2.list || [];
-          var needSave2 = false;
-          for (var wi = 0; wi < lst2.length; wi++) {
-            var entry = lst2[wi];
-            if (entry.wxLink) continue;
-            // formId 优先用存储值，其次从 url 提取
-            var entryFid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
-            if (!entryFid) continue;
-            var bkBtn2 = null;
-            var bkRow2 = document.querySelector('input[type="checkbox"][value="' + entryFid + '"]');
-            if (bkRow2) {
-              var bkTr2 = bkRow2.closest('tr');
-              if (bkTr2) bkBtn2 = bkTr2.querySelector('.copy-wx-shortlink-btn[data-biaodan-key]');
-            }
-            if (!bkBtn2) continue;
-            var bkKey2 = bkBtn2.getAttribute('data-biaodan-key');
-            try {
-              var wxResp2 = await new Promise(function(resolve) {
-                GM_xmlhttpRequest({
-                  method: 'POST',
-                  url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
-                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                  data: 'biaodan_key=' + bkKey2,
-                  onload: function(r) { try { resolve(JSON.parse(r.responseText)); } catch(e) { resolve(null); } },
-                  onerror: function() { resolve(null); }
-                });
-              });
-              if (wxResp2 && wxResp2.error_code === 0 && wxResp2.data && wxResp2.data.link) {
-                lst2[wi].wxLink = wxResp2.data.link;
-                if (!lst2[wi].formId) lst2[wi].formId = entryFid;
-                needSave2 = true;
-              }
-            } catch(e) {}
-          }
-          if (needSave2) {
-            todayRec2.list = lst2;
-            GM_setValue('tuopin_shequn_today_forms', JSON.stringify(todayRec2));
-          }
-        } catch(e) {}
         subsidyLog('在列表页，查找新建按钮...');
         await sleep(2000);
         // 找到文本含"新建机审补贴购表单"的最内层可点击元素（a / button / .el-button）
@@ -4751,7 +4662,7 @@
         var coIsAdmin = false; // 由 SSO 异步确认是否为 handongxue
         var coActiveTab = GM_getValue('tuopin_active_tab', 'optimize');
         // 社群补贴仅 handongxue 可见，非管理员若缓存了 shequn tab 则重置为 optimize
-        // if (coActiveTab === 'shequn' && GM_getValue('tuopin_my_name', '') !== 'handongxue') coActiveTab = 'optimize';
+        if (coActiveTab === 'shequn' && GM_getValue('tuopin_my_name', '') !== 'handongxue') coActiveTab = 'optimize';
         // datetime 工具：本地时间字符串转 datetime-local 值
         function coLocalDt(d) {
           var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
@@ -4768,7 +4679,7 @@
           + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
           + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
-          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + '">社群补贴</button>'
+          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + 'display:none;">社群补贴</button>'
           + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
           + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
           + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
@@ -4951,6 +4862,8 @@
             coIsAdmin = true;
             var adminPanel = document.getElementById('tuopin-task-admin-panel');
             if (adminPanel) adminPanel.style.display = 'block';
+            var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
+            if (shequnTabBtn) shequnTabBtn.style.display = '';
             // 任务白名单用本地缓存提前渲染
             var wlLocal = [];
             try { wlLocal = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
@@ -4981,6 +4894,8 @@
                 coIsAdmin = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
+                var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
+                if (shequnTabBtn) shequnTabBtn.style.display = '';
                 // 从 relay 拉最新权限名单并初始化展示
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
@@ -5186,7 +5101,7 @@
               }
               GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
+                url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
                 timeout: 15000,
                 onload: function(resp) {
                   try {
@@ -5423,86 +5338,16 @@
             for (var i = lst.length - 1; i >= 0; i--) {
               var it = lst[i];
               var safeName = String(it.name || '').replace(/</g, '&lt;');
-              var displayLink = it.wxLink || it.url;
-              var safeLink = String(displayLink || '').replace(/</g, '&lt;');
               html += '<div style="margin-bottom:5px;padding:4px 5px;background:#fafafa;border-radius:3px;">'
-                + '<div style="color:#333;margin-bottom:2px;">' + safeName + '</div>'
-                + '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
-                + '<a href="' + displayLink + '" target="_blank" style="color:#1890ff;text-decoration:none;word-break:break-all;font-size:10px;">' + safeLink + '</a>'
-                + '<span style="color:#bbb;flex-shrink:0;margin-left:6px;font-size:10px;">' + (it.time || '') + '</span>'
+                + '<div style="color:#333;margin-bottom:2px;word-break:break-all;">' + safeName + '</div>'
+                + '<div style="display:flex;justify-content:space-between;align-items:center;">'
+                + '<a href="' + it.url + '" target="_blank" style="color:#1890ff;text-decoration:underline;word-break:break-all;">表单链接</a>'
+                + '<span style="color:#bbb;flex-shrink:0;margin-left:6px;">' + (it.time || '') + '</span>'
                 + '</div></div>';
             }
             box.innerHTML = html;
           }
           renderShequnToday();
-          // 面板打开时异步补充缺失的小程序链接
-          // 先拉取列表页HTML提取 formId→biaodanKey 映射，再批量调接口
-          (function patchWxLinksFromPanel() {
-            var rec3 = {};
-            try { rec3 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
-            var lst3 = rec3.list || [];
-            var missing = lst3.filter(function(it) {
-              if (it.wxLink) return false;
-              var fid = it.formId || (it.url && it.url.match(/\/(\d+)\/?$/) ? it.url.match(/\/(\d+)\/?$/)[1] : '');
-              return !!fid;
-            });
-            if (!missing.length) return;
-            // 拉取列表页HTML，解析 formId→biaodan_key 映射
-            GM_xmlhttpRequest({
-              method: 'GET',
-              url: 'http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3',
-              onload: function(resp) {
-                // 提取所有 <input type="checkbox" value="FORMID"> 和同行 data-biaodan-key
-                // 列表页结构：checkbox value=formId 和 .copy-wx-shortlink-btn data-biaodan-key 在同一 <tr>
-                // 从HTML文本用正则提取：找每个 <tr>...</tr> 里同时含 checkbox value 和 data-biaodan-key
-                var html = resp.responseText;
-                var fidKeyMap = {};
-                // 匹配 data-biaodan-key="KEY" 附近的 checkbox value="FID"
-                var trReg = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-                var trMatch;
-                while ((trMatch = trReg.exec(html)) !== null) {
-                  var trContent = trMatch[1];
-                  var fidM = trContent.match(/type="checkbox"[^>]*value="(\d+)"/);
-                  var keyM = trContent.match(/data-biaodan-key="([a-f0-9]+)"/);
-                  if (fidM && keyM) fidKeyMap[fidM[1]] = keyM[1];
-                }
-                // 对每条缺失记录查biaodan_key，调接口
-                var pending = 0;
-                missing.forEach(function(entry) {
-                  var fid = entry.formId || (entry.url && entry.url.match(/\/(\d+)\/?$/) ? entry.url.match(/\/(\d+)\/?$/)[1] : '');
-                  var key = fidKeyMap[fid];
-                  if (!key) return;
-                  pending++;
-                  GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: 'http://biaodan.bgm.smzdm.com/biaodan/ajax_wx_miniprogram_short_link',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    data: 'biaodan_key=' + key,
-                    onload: function(r) {
-                      try {
-                        var res = JSON.parse(r.responseText);
-                        if (res && res.error_code === 0 && res.data && res.data.link) {
-                          var rec4 = {};
-                          try { rec4 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
-                          var lst4 = rec4.list || [];
-                          for (var k = 0; k < lst4.length; k++) {
-                            var kfid = lst4[k].formId || (lst4[k].url && lst4[k].url.match(/\/(\d+)\/?$/) ? lst4[k].url.match(/\/(\d+)\/?$/)[1] : '');
-                            if (kfid === fid) { lst4[k].wxLink = res.data.link; if (!lst4[k].formId) lst4[k].formId = fid; break; }
-                          }
-                          rec4.list = lst4;
-                          GM_setValue('tuopin_shequn_today_forms', JSON.stringify(rec4));
-                        }
-                      } catch(e) {}
-                      pending--;
-                      if (pending <= 0) renderShequnToday();
-                    },
-                    onerror: function() { pending--; if (pending <= 0) renderShequnToday(); }
-                  });
-                });
-              },
-              onerror: function() {}
-            });
-          })();
 
           // 实际总价和件数从接口回调填入
           var pageTotal = 0;
@@ -5555,7 +5400,7 @@
                 if (!productUrl) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
                 GM_xmlhttpRequest({
                   method: 'GET',
-                  url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
+                  url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
                   timeout: 15000,
                   onload: function(resp) {
                     try {
