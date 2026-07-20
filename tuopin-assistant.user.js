@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.5.7
+// @version      5.5.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -30,6 +30,7 @@
 // @connect      www.smzdm.com
 // @connect      go.smzdm.com
 // @connect      biaodan.bgm.smzdm.com
+// @connect      10.45.147.158
 // @connect      mindpad-bgm.smzdm.com
 // @connect      bi-superset-bgm.smzdm.com
 // @connect      youhui.bgm.smzdm.com
@@ -1740,9 +1741,9 @@
       }
     }
 
-    // 通过 MindPad /relay/ 中转查询 DCC 佣金。
-    // 走公网域名 mindpad-bgm.smzdm.com/relay（HTTPS），公司网络下均可访问。
-    // relay 侧做公司网段校验，仅公司内网可查。
+    // 通过内网直连 commission-relay（10.45.147.158:8099）查询 DCC 佣金。
+    // 绕过公网 gateway（gateway 负载均衡导致 /relay/ 被路由到无 relay 的其他服务器）。
+    // relay 监听 0.0.0.0:8099，公司内网均可访问。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
       var rateBox = document.getElementById('ds-commission-rate');
@@ -1750,7 +1751,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+          url: 'http://10.45.147.158:8099/commission/?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
@@ -5187,7 +5188,7 @@
               }
               GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+                url: 'http://10.45.147.158:8099/commission/?url=' + encodeURIComponent(productUrl),
                 timeout: 15000,
                 onload: function(resp) {
                   try {
@@ -5556,7 +5557,7 @@
                 if (!productUrl) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
                 GM_xmlhttpRequest({
                   method: 'GET',
-                  url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+                  url: 'http://10.45.147.158:8099/commission/?url=' + encodeURIComponent(productUrl),
                   timeout: 15000,
                   onload: function(resp) {
                     try {
