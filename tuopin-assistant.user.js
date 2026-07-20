@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.4.2
+// @version      5.4.9
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -31,7 +31,6 @@
 // @connect      go.smzdm.com
 // @connect      biaodan.bgm.smzdm.com
 // @connect      mindpad-bgm.smzdm.com
-// @connect      commission-bgm.agentdevops.zdm.net
 // @connect      bi-superset-bgm.smzdm.com
 // @connect      youhui.bgm.smzdm.com
 // @connect      sso-bgm.smzdm.com
@@ -47,7 +46,7 @@
 
   // ===== 版本更新检查：拉服务端 version.json 比对版本，发现新版在右上角弹更新横幅 =====
   (function checkUpdate() {
-    var VERSION_URL = 'https://commission-bgm.agentdevops.zdm.net/tuopin-version';
+    var VERSION_URL = 'https://mindpad-bgm.smzdm.com/relay/tuopin-version';
     var DL_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
     var curVer = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) ? GM_info.script.version : '';
     if (!curVer) return;
@@ -1741,8 +1740,8 @@
       }
     }
 
-    // 通过 Kong 网关中转查询 DCC 佣金。
-    // 走公网域名 commission-bgm.agentdevops.zdm.net（HTTPS），公司网络下均可访问。
+    // 通过 MindPad /relay/ 中转查询 DCC 佣金。
+    // 走公网域名 mindpad-bgm.smzdm.com/relay（HTTPS），公司网络下均可访问。
     // relay 侧做公司网段校验，仅公司内网可查。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
@@ -1751,7 +1750,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+          url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
@@ -2946,12 +2945,12 @@
       var isShequn = (item.type === 'shequn');
 
       // ── 表单名称格式 ──
-      // 社群：社群-当天日期-商品名称；非社群：日期+品牌+标题
+      // 社群：社群-当天日期-商品名称；非社群（大淘客/去补贴）：当天日期-品牌+商品名
       var formName;
       if (isShequn) {
         formName = '社群-' + datePrefix + '-' + (item.title || '').slice(0, 20);
       } else {
-        formName = datePrefix + (brand ? brand : '') + (item.title || '').slice(0, 20);
+        formName = datePrefix + '-' + (brand || '') + (item.title || '').slice(0, 20);
       }
 
       // 0. 适用终端 — 最先执行。applyTerminalScope4 触发页面联动(现金锁定/商城过滤/UEditor初始化)，
@@ -4086,7 +4085,7 @@
       }
 
       // ===== 任务时段共享端点（commission-relay /taskslots，多同事防撞车）=====
-      var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
+      var RELAY = 'https://mindpad-bgm.smzdm.com/relay';
       var coSlotsCache = { date: '', slots: [], claimed: [] };
       // 用本地缓存的今日槽位数据预填，relay 回来后再覆盖（让 tab 打开即有数）
       try {
@@ -4831,6 +4830,25 @@
             var taskTabBtn = document.getElementById('co-tab-btn-task');
             if (taskTabBtn) taskTabBtn.style.display = '';
           }
+          if (cachedName === 'handongxue') {
+            coIsAdmin = true;
+            var adminPanel = document.getElementById('tuopin-task-admin-panel');
+            if (adminPanel) adminPanel.style.display = 'block';
+            var shequnTabBtn = document.getElementById('co-tab-btn-shequn');
+            if (shequnTabBtn) shequnTabBtn.style.display = '';
+            // 任务白名单用本地缓存提前渲染
+            var wlLocal = [];
+            try { wlLocal = JSON.parse(GM_getValue('tuopin_task_whitelist', '[]')); } catch(e) {}
+            if (wlLocal.length) coWlRefresh(wlLocal);
+            // 销售数据 tab 的管理员面板也提前显示，用本地 dbids 缓存渲染
+            var salesAdminPanel = document.getElementById('co-sales-admin-panel');
+            if (salesAdminPanel) {
+              salesAdminPanel.style.display = 'block';
+              var dbCache2 = {};
+              try { dbCache2 = JSON.parse(GM_getValue('tuopin_dbids_cache', '{}')); } catch(e) {}
+              if (dbCache2.dbids) coDbidsRefresh(dbCache2.dbids);
+            }
+          }
         })();
 
         // 异步请求 SSO 门户识别登录人，仅 handongxue 激活管理员模式，权限名单内用户显示任务 tab
@@ -5055,7 +5073,7 @@
               }
               GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+                url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
                 timeout: 15000,
                 onload: function(resp) {
                   try {
@@ -5262,8 +5280,8 @@
           var amtDisplayEl = document.getElementById('shequn-comm-amt');
           // 初始化 code 字段
           if (codeEl) {
-            codeEl.value = GM_getValue('tuopin_subsidy_code', '');
-            codeEl.onblur = function() { GM_setValue('tuopin_subsidy_code', this.value.trim()); };
+            codeEl.value = GM_getValue('tuopin_shequn_code', '');
+            codeEl.onblur = function() { GM_setValue('tuopin_shequn_code', this.value.trim()); };
           }
 
           // 显示上次创建的表单链接
@@ -5328,7 +5346,7 @@
                 if (!productUrl) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
                 GM_xmlhttpRequest({
                   method: 'GET',
-                  url: 'https://commission-bgm.agentdevops.zdm.net/commission/?url=' + encodeURIComponent(productUrl),
+                  url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
                   timeout: 15000,
                   onload: function(resp) {
                     try {
@@ -5390,13 +5408,19 @@
               commissionRate: __shequnCommRate || '',
               articleId: CO_ARTICLE_ID || '',
               mall: mallName,
-              code: (codeEl ? codeEl.value.trim() : '') || GM_getValue('tuopin_subsidy_code', '')
+              code: (codeEl ? codeEl.value.trim() : '') || GM_getValue('tuopin_shequn_code', '')
             });
             GM_setValue('tuopin_subsidy_queue', JSON.stringify(queue));
             GM_setValue('tuopin_subsidy_index', '0');
-            shequnLog('已加入队列，跳转中...');
+            shequnLog('已加入队列，新标签页执行中...');
+            // 新开后台标签页跑建表单流程（同大淘客模式）：生成带序号的 runId 引导锁带进 URL，
+            // 让新标签成为流程归属者执行 fillSubsidyForm。当前编辑页不执行、不启心跳，避免占锁误拦手动操作。
             setTimeout(function() {
-              tuopinGo('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3');
+              var seq = (parseInt(GM_getValue(TUOPIN_FLOW_SEQ_KEY, '0'), 10) || 0) + 1;
+              GM_setValue(TUOPIN_FLOW_SEQ_KEY, String(seq));
+              var runId = 's' + seq + 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+              tuopinWriteLock(runId);
+              GM_openInTab('http://biaodan.bgm.smzdm.com/biaodan/subsidies_list_ver3?tuopin_run=' + encodeURIComponent(runId), { active: false, insert: true });
             }, 800);
           };
         })();
@@ -6718,7 +6742,7 @@
 
   // ===== 任务中台 task-bgm.smzdm.com 自动填表 =====
   if (location.hostname === 'task-bgm.smzdm.com') {
-    var RELAY = 'https://commission-bgm.agentdevops.zdm.net';
+    var RELAY = 'https://mindpad-bgm.smzdm.com/relay';
     var taskParamRaw = (location.hash + location.search).indexOf('tuopin_task=1') >= 0
       ? GM_getValue('tuopin_pending_task', '') : '';
     if (taskParamRaw) {
