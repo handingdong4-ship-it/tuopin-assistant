@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.5.10
+// @version      5.5.12
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -1741,7 +1741,7 @@
       }
     }
 
-    // 通过 MindPad relay 中转查询 DCC 佣金（HTTPS 公网可访问）。
+    // 通过 mindpad-bgm.smzdm.com/relay 中转查询 DCC 佣金，内网外网均可访问。
     function queryCommission(productUrl, commBox) {
       if (!productUrl) return;
       var rateBox = document.getElementById('ds-commission-rate');
@@ -1749,7 +1749,7 @@
       try {
         GM_xmlhttpRequest({
           method: 'GET',
-          url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+          url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
           timeout: 15000,
           onload: function(resp) {
             try {
@@ -5186,7 +5186,7 @@
               }
               GM_xmlhttpRequest({
                 method: 'GET',
-                url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+                url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
                 timeout: 15000,
                 onload: function(resp) {
                   try {
@@ -5555,7 +5555,7 @@
                 if (!productUrl) { if (rateEl) { rateEl.textContent = '-'; rateEl.style.color = '#999'; } return; }
                 GM_xmlhttpRequest({
                   method: 'GET',
-                  url: 'https://mindpad-bgm.smzdm.com/relay/commission/?url=' + encodeURIComponent(productUrl),
+                  url: 'https://mindpad-bgm.smzdm.com/relay/commission?url=' + encodeURIComponent(productUrl),
                   timeout: 15000,
                   onload: function(resp) {
                     try {
