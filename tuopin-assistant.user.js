@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         大淘客拓品助手
+// @name         拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.6.6
+// @version      5.6.8
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -6337,21 +6337,21 @@
             t.disabled = false; t.textContent = isVidFocus ? '设置为焦点图' : '用于焦点图';
           };
           if (isVidFocus) {
-            // 视频 → webp → 焦点图
+            // 视频 → webp → 焦点图（直接调 GW video_to_gif，与 img-to-gif 扩展一致）
             var apiKeyF = GM_getValue(CO_KEY, '');
-            if (!apiKeyF) return alert('请先配置 API Key');
+            if (!apiKeyF) { alert('请先配置 API Key'); return; }
             coLog('⏳ 视频转 webp 中...');
             t.disabled = true; t.textContent = '⏳ 转换中...';
             GM_xmlhttpRequest({
               method: 'POST', url: GW + '/ai-omni-auth/video/video_to_gif',
               headers: { 'Authorization': 'Bearer ' + apiKeyF, 'Content-Type': 'application/json' },
-              data: JSON.stringify({ type: 2, video_url: imgUrl, fps: 15, width: 800, quality: 80, upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc' } }),
+              data: JSON.stringify({ type: 2, video_url: imgUrl, fps: 10, width: 480, quality: 80, upload_img_config: { channel: 12, type: 'youhui', oper: 'aigc' } }),
               timeout: 60000,
               onload: function(r) {
                 try {
                   var j = JSON.parse(r.responseText);
                   if (j.error_code !== 0) { coLog('✗ 视频转 webp 失败: ' + (j.error_msg || '未知')); t.disabled = false; t.textContent = '设置为焦点图'; return; }
-                  var webpUrl = (j.data || {}).gif_url || '';
+                  var webpUrl = ((j.data || {}).gif_url || '').replace(/(_source=[^&]*)/, '');
                   if (!webpUrl) { coLog('✗ 视频转 webp 无 URL'); t.disabled = false; t.textContent = '设置为焦点图'; return; }
                   coLog('✓ 视频转 webp 完成: ' + webpUrl.slice(0, 60));
                   doFocusWithUrl(webpUrl);
