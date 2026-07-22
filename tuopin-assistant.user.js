@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         拓品助手
+// @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.6.8
+// @version      5.7.37
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -40,13 +40,62 @@
 // @connect      gw-openapi-bgm.smzdm.com
 // @connect      openai-cv-bgm.smzdm.com
 // @connect      raw.githubusercontent.com
-// @run-at       document-idle
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  // ===== 版本更新检查：拉服务端 version.json 比对版本，发现新版在右上角弹更新横幅 =====
+  // ===== 版本更新检查：拉服务端 version.json 比对版本，发现新版在「拓品助手」面板标题旁显示更新徽标 =====
+  var __tuopinUpdateInfo = null;     // { newVer, curVer, dlUrl }
+  var __tuopinUpdateDismissed = false;
+  // 在已知「拓品助手」面板标题旁注入更新徽标（页面可能存在的面板：#tuopin-co-panel / #tuopin-toolbar）
+  function __tuopinApplyUpdateBadge() {
+    if (!__tuopinUpdateInfo || __tuopinUpdateDismissed) return;
+    var info = __tuopinUpdateInfo;
+    var containers = [];
+    var co = document.getElementById('tuopin-co-panel');
+    if (co) containers.push(co);
+    var tb = document.getElementById('tuopin-toolbar');
+    if (tb) containers.push(tb);
+    var jdtb = document.getElementById('tuopin-jd-toolbar');
+    if (jdtb) containers.push(jdtb);
+    containers.forEach(function (c) {
+      // 找到文本以「拓品助手」开头的标题 span（跳过已标注过的，避免重复注入）
+      var titleSpan = null;
+      var spans = c.querySelectorAll('span');
+      for (var i = 0; i < spans.length; i++) {
+        if (spans[i].getAttribute('data-tuopin-badged') === '1') continue;
+        if ((spans[i].textContent || '').indexOf('拓品助手') === 0) { titleSpan = spans[i]; break; }
+      }
+      if (!titleSpan) return;
+      titleSpan.setAttribute('data-tuopin-badged', '1');
+      var badge = document.createElement('a');
+      badge.className = 'tuopin-update-badge';
+      badge.href = info.dlUrl;
+      badge.target = '_blank';
+      badge.title = '当前 v' + info.curVer + '，点击下载新版 v' + info.newVer;
+      badge.style.cssText = 'display:inline-flex;align-items:center;margin-left:6px;padding:1px 7px;border-radius:9px;background:linear-gradient(90deg,#ff7a00,#ff4757);color:#fff;font-size:10px;font-weight:600;text-decoration:none;line-height:1.6;white-space:nowrap;box-shadow:0 1px 4px rgba(255,71,87,0.45);';
+      badge.textContent = '🔔 v' + info.newVer + ' ↗';
+      var close = document.createElement('span');
+      close.className = 'tuopin-update-badge-x';
+      close.title = '今日不再提示';
+      close.style.cssText = 'display:inline-flex;align-items:center;margin-left:4px;cursor:pointer;font-size:12px;color:#bbb;line-height:1.6;';
+      close.textContent = '✕';
+      close.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        __tuopinUpdateDismissed = true;
+        try { GM_setValue('tuopin_update_dismiss', info.newVer + '|' + new Date().toDateString()); } catch (err) {}
+        document.querySelectorAll('.tuopin-update-badge, .tuopin-update-badge-x').forEach(function (el) { el.remove(); });
+        document.querySelectorAll('[data-tuopin-badged]').forEach(function (el) { el.removeAttribute('data-tuopin-badged'); });
+      };
+      titleSpan.parentNode.insertBefore(badge, titleSpan.nextSibling);
+      titleSpan.parentNode.insertBefore(close, badge.nextSibling);
+    });
+  }
+  window.__tuopinApplyUpdateBadge = __tuopinApplyUpdateBadge;
+
   (function checkUpdate() {
     var VERSION_URL = 'https://commission-bgm.agentdevops.zdm.net/tuopin-version';
     var DL_URL = 'https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js';
@@ -65,20 +114,18 @@
       return 0;
     }
 
-    function showBanner(newVer) {
-      if (document.getElementById('tuopin-update-banner')) return;
-      var banner = document.createElement('div');
-      banner.id = 'tuopin-update-banner';
-      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:linear-gradient(90deg,#ff7a00,#ff4757);color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;line-height:1.4;padding:8px 16px;display:flex;align-items:center;justify-content:center;gap:14px;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
-      banner.innerHTML =
-        '<span>🔔 拓品助手有新版本 <b>v' + newVer + '</b>（当前 v' + curVer + '），建议更新</span>' +
-        '<a id="tuopin-update-go" href="' + DL_URL + '" target="_blank" style="background:#fff;color:#ff4757;padding:3px 12px;border-radius:4px;text-decoration:none;font-weight:600;">点此更新</a>' +
-        '<span id="tuopin-update-close" style="cursor:pointer;font-size:16px;padding:0 4px;opacity:0.85;">✕</span>';
-      (document.body || document.documentElement).appendChild(banner);
-      document.getElementById('tuopin-update-close').onclick = function() {
-        banner.remove();
-        try { GM_setValue('tuopin_update_dismiss', newVer + '|' + new Date().toDateString()); } catch (e) {}
-      };
+    function onNewVer(newVer) {
+      var dismiss = '';
+      try { dismiss = GM_getValue('tuopin_update_dismiss', ''); } catch (e) {}
+      if (dismiss === newVer + '|' + new Date().toDateString()) return;
+      __tuopinUpdateInfo = { newVer: newVer, curVer: curVer, dlUrl: DL_URL };
+      // 面板可能尚未构建：立即试一次，之后每 2s 补一次（共 6 次），覆盖面板晚构建的情况
+      __tuopinApplyUpdateBadge();
+      var tries = 0;
+      var iv = setInterval(function () {
+        __tuopinApplyUpdateBadge();
+        if (++tries >= 6) clearInterval(iv);
+      }, 2000);
     }
 
     function doCheck() {
@@ -92,11 +139,7 @@
               var data = JSON.parse(resp.responseText || '{}');
               var remoteVer = data.version || '';
               if (!remoteVer || cmpVer(remoteVer, curVer) <= 0) return;
-              var dismiss = '';
-              try { dismiss = GM_getValue('tuopin_update_dismiss', ''); } catch (e) {}
-              if (dismiss === remoteVer + '|' + new Date().toDateString()) return;
-              if (document.body) showBanner(remoteVer);
-              else window.addEventListener('DOMContentLoaded', function() { showBanner(remoteVer); });
+              onNewVer(remoteVer);
             } catch (e) {}
           },
           onerror: function() {},
@@ -1876,6 +1919,20 @@
     }
 
     async function injectAndSave(saveOnly) {
+      // 去补贴按钮：补贴金额必填；保存按钮：可不填
+      var subsidyEl = document.getElementById('ds-subsidy');
+      var subsidyVal = subsidyEl ? (subsidyEl.value || '').trim() : '';
+      var subsidyNum = parseFloat(subsidyVal || '0') || 0;
+      if (!saveOnly && subsidyNum <= 0) {
+        if (subsidyEl) {
+          subsidyEl.style.borderColor = '#ff4d4f';
+          subsidyEl.focus();
+          var _restore = function() { subsidyEl.style.borderColor = ''; subsidyEl.removeEventListener('input', _restore); };
+          subsidyEl.addEventListener('input', _restore);
+        }
+        dsLog('请填写补贴金额（去补贴必填）');
+        return;
+      }
       var goBtn = document.getElementById(saveOnly ? 'ds-save-only' : 'ds-go');
       if (goBtn) { goBtn.disabled = true; goBtn.textContent = '处理中...'; }
       var logBox = document.getElementById('tuopin-direct-log');
@@ -2114,6 +2171,333 @@
 
   // ===== SMZDM edit_youhui 编辑页逻辑（3日同价文章更新）=====
   if (location.hostname === 'youhui.bgm.smzdm.com' && location.pathname.indexOf('edit_youhui') >= 0) {
+
+    // ── 好价批量工具：批量 skill 执行（精选/回捞/发现/加标签 叠加）──
+    // 入口：GM 存储里有正在跑的批量任务且当前文章 id 匹配 task.ids[task.idx]（30 分钟内启动）
+    // 不用 URL 参数触发，URL 保持干净 edit_youhui/{id}
+    var _bsTaskRaw = GM_getValue('tuopin_batch_skill', '');
+    var _bsTask = null;
+    try { _bsTask = _bsTaskRaw ? JSON.parse(_bsTaskRaw) : null; } catch(e) { _bsTask = null; }
+    var _bsIdMatch = location.pathname.match(/edit_youhui\/(\d+)/);
+    var _bsCurId = _bsIdMatch ? _bsIdMatch[1] : '';
+    var _bsActive = _bsTask && _bsTask.ids && _bsTask.idx != null
+      && _bsTask.ids[_bsTask.idx] === _bsCurId
+      && (Date.now() - (_bsTask.startedAt || 0) < 1800000);  // 30 分钟内启动才生效，防残留误触发
+    if (_bsActive) {
+      (function batchSkillRunner() {
+        var TARGET_TAGS = ['yszb', 'phbdj', '困难好价', '复杂好价'];
+        var BATCH_TAG = '今日必买';
+        function bLog(msg) { console.log('[批量skill] ' + msg); }
+        function sleep(ms) { return new Promise(function(r){ setTimeout(r, ms); }); }
+
+        // 关闭 boxy 弹窗（优先"忽略提醒"，其次"确定/确认"）
+        function closeDialogs() {
+          var b3s = document.querySelectorAll('.boxy-btn3');
+          for (var i = 0; i < b3s.length; i++) {
+            if (b3s[i].offsetParent !== null) {
+              var v = b3s[i].getAttribute('value') || b3s[i].textContent || '';
+              if (v.indexOf('忽略') >= 0) { b3s[i].click(); return; }
+            }
+          }
+          for (var j = 0; j < b3s.length; j++) { if (b3s[j].offsetParent !== null) { b3s[j].click(); return; } }
+          var all = document.querySelectorAll('.boxy-btn1, .boxy-btn2');
+          for (var k = 0; k < all.length; k++) {
+            if (all[k].offsetParent !== null) {
+              var vv = (all[k].value || all[k].textContent || '').trim();
+              if (vv === '确定' || vv === '确认') { all[k].click(); return; }
+            }
+          }
+          var b1 = document.querySelector('.boxy-btn1');
+          if (b1 && b1.offsetParent !== null) b1.click();
+        }
+
+        // 轮询等待精选/发现异步校验弹窗消失（最多 deadline ms）
+        async function waitDialogClose(checkboxId, deadline) {
+          var end = Date.now() + deadline;
+          while (Date.now() < end) {
+            await sleep(150);
+            var anyVisible = false;
+            var visibles = document.querySelectorAll('.boxy-btn3, .boxy-btn1');
+            for (var i = 0; i < visibles.length; i++) { if (visibles[i].offsetParent) { anyVisible = true; break; } }
+            var cbChecked = (document.getElementById(checkboxId) || {}).checked;
+            if (!anyVisible && cbChecked) break;
+          }
+          closeDialogs();
+          await sleep(150);
+        }
+
+        // API 保存（do_normal_save，不点按钮避免页面跳转打断流程）
+        function apiSave() {
+          return new Promise(function(resolve) {
+            var formData = (window.toolBox && toolBox.getFormData) ? toolBox.getFormData() : '';
+            fetch('/youhui_action/do_normal_save', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+              body: formData
+            }).then(function(r){ return r.json(); }).then(function(j) {
+              resolve({ error_code: j.error_code, msg: j.msg || '' });
+            }).catch(function(e){ resolve({ error_code: -1, msg: 'fetch异常:' + e.message }); });
+          });
+        }
+
+        // 立即更新 API（回捞用，保存后调用，避免"请勿重复提交"）
+        function apiSyncTime(articleId) {
+          return new Promise(function(resolve) {
+            fetch('/youhui_action/ajax_sync_time_again?article_id=' + articleId, {
+              headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            }).then(function(r){ return r.json(); }).then(function(j) {
+              resolve({ error_code: j.error_code, msg: j.error_msg || '' });
+            }).catch(function(e){ resolve({ error_code: -1, msg: 'fetch异常:' + e.message }); });
+          });
+        }
+
+        // 加标签（API：搜索→写入 #acticle_binded_tag→bindedTagInit）
+        function addTagApi(tag) {
+          return new Promise(function(resolve) {
+            fetch('/youhui_action/ajax_add_tag', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+              body: 'name=' + encodeURIComponent(tag)
+            }).then(function(r){ return r.json(); }).then(function(j) {
+              if (j && Array.isArray(j) && j.length > 0) {
+                var tagId = j[0].id;
+                var obj = document.getElementById('acticle_binded_tag');
+                if (obj) {
+                  var ids = obj.value ? obj.value.split(',') : [];
+                  if (ids.indexOf(String(tagId)) < 0) { ids.push(String(tagId)); obj.value = ids.join(','); }
+                }
+                if (window.toolBox && typeof toolBox.bindedTagInit === 'function') toolBox.bindedTagInit();
+                resolve('加标签:成功(id=' + tagId + ')');
+              } else {
+                resolve('加标签:未找到「' + tag + '」');
+              }
+            }).catch(function(e){ resolve('加标签:异常-' + e.message); });
+          });
+        }
+
+        // 处理一篇文章（对齐去补贴保存逻辑：等按钮出现→DOM操作→点按钮→处理弹窗→检测成功）
+        async function processOne(id, skills) {
+          var log = [];
+
+          // 等"保存修改"按钮出现即认为页面就绪（对齐去补贴方式，不等 toolBox）
+          var readyWait = 0;
+          while (readyWait < 15000) {
+            var _saveBtn = document.querySelector('button, input[type="button"], input[type="submit"]');
+            var _found = false;
+            var _allBtns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+            for (var _bi = 0; _bi < _allBtns.length; _bi++) {
+              var _bt = (_allBtns[_bi].textContent || '').trim() || _allBtns[_bi].value || '';
+              if (_bt === '保存修改' && _allBtns[_bi].offsetParent !== null) { _found = true; break; }
+            }
+            if (_found) break;
+            await sleep(200); readyWait += 200;
+          }
+
+          // 加标签请求提前 fire（回捞/加标签，与 DOM 操作并行）
+          var _addTagPromise = null;
+          if (skills.indexOf('回捞') >= 0 || skills.indexOf('加标签') >= 0) {
+            _addTagPromise = addTagApi(BATCH_TAG);
+          }
+
+          // 跳过检查
+          var ot = document.querySelector('#set_over_time');
+          if (ot && ot.checked) return { id: id, status: 'skipped', detail: '已过期(人工)' };
+          var so = document.querySelector('#set_sold_out');
+          if (so && so.checked) return { id: id, status: 'skipped', detail: '已售罄(人工)' };
+          var mr = document.getElementById('machine_report');
+          if (mr) {
+            var mrt = mr.innerText || mr.textContent || '';
+            if (mrt.indexOf('已过期') >= 0 || mrt.indexOf('过期') >= 0) return { id: id, status: 'skipped', detail: '已过期(机器)' };
+            if (mrt.indexOf('已售罄') >= 0 || mrt.indexOf('售罄') >= 0) return { id: id, status: 'skipped', detail: '已售罄(机器)' };
+          }
+          var statusEls = document.querySelectorAll('.article-status, .status-tag, [class*="expire"], [class*="sold"]');
+          for (var sei = 0; sei < statusEls.length; sei++) {
+            var set = (statusEls[sei].innerText || statusEls[sei].textContent || '').trim();
+            if (set.indexOf('过期') >= 0 || set.indexOf('结束') >= 0) return { id: id, status: 'skipped', detail: '已过期(状态标签):' + set.slice(0, 20) };
+            if (set.indexOf('售罄') >= 0) return { id: id, status: 'skipped', detail: '已售罄(状态标签):' + set.slice(0, 20) };
+          }
+
+          // 删降权标签
+          if (skills.indexOf('精选') >= 0 || skills.indexOf('回捞') >= 0 || skills.indexOf('发现') >= 0) {
+            var deleted = [];
+            var tagBox = document.getElementById('tag_list_box');
+            if (tagBox) {
+              var tagBtns = tagBox.querySelectorAll('img.remove-tag[data-tag-name]');
+              for (var ti = 0; ti < tagBtns.length; ti++) {
+                var tn = tagBtns[ti].getAttribute('data-tag-name') || '';
+                if (TARGET_TAGS.some(function(t){ return tn.indexOf(t) >= 0; })) { tagBtns[ti].click(); deleted.push(tn); }
+              }
+            }
+            log.push('删标签:[' + (deleted.join(',') || '无') + ']');
+          }
+
+          // 4级品类
+          if (skills.indexOf('精选') >= 0 || skills.indexOf('发现') >= 0 || skills.indexOf('回捞') >= 0) {
+            var cateArea = null;
+            var tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+            var twNode;
+            while ((twNode = tw.nextNode())) {
+              if (twNode.textContent.trim() === '商品分类') { cateArea = twNode.parentElement && twNode.parentElement.parentElement; break; }
+            }
+            if (!cateArea) {
+              log.push('无分类区域');
+            } else {
+              var cateSels = cateArea.querySelectorAll('select');
+              if (cateSels.length < 4) {
+                log.push('仅' + cateSels.length + '级');
+              } else {
+                var s4 = cateSels[3];
+                var cur4 = s4.options[s4.selectedIndex];
+                if (cur4 && cur4.value && cur4.text !== '请选择') {
+                  log.push('4级已选:' + cur4.text);
+                } else {
+                  var opts4 = Array.prototype.filter.call(s4.options, function(o){ return o.value && o.text !== '请选择'; });
+                  if (!opts4.length) {
+                    log.push('4级无选项');
+                  } else {
+                    var title4 = (document.querySelector('input[name="article_title"]') || {}).value || '';
+                    var m4 = opts4.find(function(o){ return title4.indexOf(o.text.trim()) >= 0; });
+                    if (!m4) {
+                      for (var oi = 0; oi < opts4.length; oi++) {
+                        var ot4 = opts4[oi].text.trim();
+                        for (var ki = 0; ki < ot4.length - 1; ki++) {
+                          if (title4.indexOf(ot4.substring(ki, ki + 2)) >= 0) { m4 = opts4[oi]; break; }
+                        }
+                        if (m4) break;
+                      }
+                    }
+                    if (!m4) m4 = opts4.find(function(o){ return o.text.trim().indexOf('其他') === 0; }) || opts4[0];
+                    s4.value = m4.value;
+                    s4.dispatchEvent(new Event('change', { bubbles: true }));
+                    log.push('4级选择:' + m4.text);
+                  }
+                }
+              }
+            }
+          }
+
+          // 发现/精选互斥：精选时取消发现，发现时取消精选
+          if (skills.indexOf('发现') >= 0) {
+            var fxCb = document.getElementById('article_type_faxian');
+            if (fxCb) { fxCb.checked = true; log.push('发现:已注入'); }
+            else { log.push('发现:未找到'); }
+            var jxCbOff = document.getElementById('article_type_jingxuan');
+            if (jxCbOff) jxCbOff.checked = false;
+          }
+          if (skills.indexOf('精选') >= 0) {
+            var jxCb = document.getElementById('article_type_jingxuan');
+            if (jxCb) { jxCb.checked = true; log.push('精选:已注入'); }
+            else { log.push('精选:未找到'); }
+            var fxCbOff = document.getElementById('article_type_faxian');
+            if (fxCbOff) fxCbOff.checked = false;
+          }
+
+          // 立即同步：注入 checked
+          if (skills.indexOf('精选') >= 0 || skills.indexOf('回捞') >= 0) {
+            var syncR = document.getElementById('article_sync_home_1');
+            if (syncR) { syncR.checked = true; log.push('立即同步:已注入'); }
+            else {
+              var syncLabels = document.querySelectorAll('label');
+              var syncDone = false;
+              for (var si = 0; si < syncLabels.length; si++) {
+                if (syncLabels[si].textContent.trim() === '立即同步') {
+                  var syncInp = syncLabels[si].querySelector('input[type="radio"]');
+                  if (syncInp) { syncInp.checked = true; log.push('立即同步:已注入(label)'); syncDone = true; break; }
+                }
+              }
+              if (!syncDone) log.push('立即同步:未找到');
+            }
+          }
+
+          // 等加标签结果
+          if (_addTagPromise) { log.push(await _addTagPromise); }
+
+          // 同步 UEditor
+          try {
+            if (typeof UE !== 'undefined' && UE.instants) {
+              for (var k in UE.instants) { try { UE.instants[k].sync(); } catch(e) {} }
+            }
+          } catch(e) {}
+
+          // 保存：点"保存修改"按钮 → 处理弹窗 → 检测"保存成功"（对齐去补贴逻辑，循环最多5次）
+          var saved = false;
+          for (var attempt = 0; attempt < 5 && !saved; attempt++) {
+            if (document.body.innerText.indexOf('保存成功') >= 0) { saved = true; break; }
+            var saveBtns = document.querySelectorAll('button, input[type="button"], input[type="submit"]');
+            for (var sbi = 0; sbi < saveBtns.length; sbi++) {
+              var sbt = (saveBtns[sbi].textContent || '').trim() || saveBtns[sbi].value || '';
+              if (sbt === '保存修改' && saveBtns[sbi].offsetParent !== null) { saveBtns[sbi].click(); break; }
+            }
+            await sleep(1200);
+            // 处理弹窗：优先"忽略提醒"，其次 boxy-btn1
+            var b3s = document.querySelectorAll('.boxy-btn3');
+            var clickedB3 = false;
+            for (var b3i = 0; b3i < b3s.length; b3i++) {
+              if (b3s[b3i].offsetParent !== null) {
+                var b3v = b3s[b3i].getAttribute('value') || '';
+                if (b3v.indexOf('忽略') >= 0) { b3s[b3i].click(); clickedB3 = true; break; }
+              }
+            }
+            if (!clickedB3) {
+              for (var b3j = 0; b3j < b3s.length; b3j++) {
+                if (b3s[b3j].offsetParent !== null) { b3s[b3j].click(); clickedB3 = true; break; }
+              }
+            }
+            if (!clickedB3) { var b1 = document.querySelector('.boxy-btn1'); if (b1 && b1.offsetParent !== null) b1.click(); }
+            await sleep(1500);
+          }
+          log.push(saved ? '保存:成功' : '保存:未检测到成功');
+
+          // 回捞：保存成功后立即更新
+          if (skills.indexOf('回捞') >= 0 && saved) {
+            var syncRes = await apiSyncTime(id);
+            log.push('立即更新:' + (syncRes.error_code === 0 ? '成功' : (syncRes.msg || 'code=' + syncRes.error_code)));
+          }
+
+          return { id: id, status: saved ? 'success' : 'save_failed', detail: log.join(' | ') };
+        }
+
+        // 主循环：读任务→处理当前篇→推进→跳下一篇
+        async function run() {
+          var taskRaw = GM_getValue('tuopin_batch_skill', '');
+          if (!taskRaw) { bLog('无批量任务'); return; }
+          var task;
+          try { task = JSON.parse(taskRaw); } catch(e) { bLog('任务解析失败'); return; }
+          var idMatch = location.pathname.match(/edit_youhui\/(\d+)/);
+          var curId = idMatch ? idMatch[1] : '';
+          if (!curId) { bLog('无法识别当前文章ID'); return; }
+          bLog('处理 ' + (task.idx + 1) + '/' + task.ids.length + ' id=' + curId + ' skills=[' + task.skills.join(',') + ']');
+          var r;
+          try { r = await processOne(curId, task.skills); }
+          catch(e) { r = { id: curId, status: 'error', detail: e.message }; }
+          bLog(JSON.stringify(r));
+          task.results.push(r);
+          task.idx = (task.idx || 0) + 1;
+          GM_setValue('tuopin_batch_skill_result', JSON.stringify(task.results));
+          // 下一篇
+          if (task.idx < task.ids.length) {
+            var nextId = task.ids[task.idx];
+            GM_setValue('tuopin_batch_skill', JSON.stringify(task));
+            await sleep(50);
+            window.onbeforeunload = null;
+            location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + nextId;
+          } else {
+            // 全部完成
+            GM_setValue('tuopin_batch_skill', '');
+            bLog('全部完成: ' + task.results.length + ' 篇');
+            try { window.close(); } catch(e) {}
+          }
+        }
+
+        // DOM 就绪后尽快跑（processOne 内部会等 toolBox，启动延迟 100ms 即可）
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+          setTimeout(run, 100);
+        } else {
+          window.addEventListener('DOMContentLoaded', function(){ setTimeout(run, 100); });
+        }
+      })();
+      // 批量 skill 执行块结束，不再走下方 confirm/3日同价逻辑
+    }
 
     // ── 内容优化：确认填入焦点图 + 加标签 + 保存 ──
     if (location.search.indexOf('tuopin_co_confirm=1') >= 0) {
@@ -4763,7 +5147,22 @@
         panel.id = 'tuopin-co-panel';
         panel.style.cssText = 'background:#fff;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.25);padding:10px;width:270px;font-family:-apple-system,sans-serif;font-size:13px;';
         var coIsAdmin = false; // 由 SSO 异步确认是否为 handongxue
+        // 两级 tab：大 tab → 小 tab 组
+        var BIG_TABS = {
+          subsidy: { label: '补贴优化', subtabs: ['shequn', 'optimize', 'sales'] },
+          ops:     { label: '批量化运营', subtabs: ['task', 'inject', 'batch'] }
+        };
+        // 小 tab → 大 tab 反向映射（兼容旧 tuopin_active_tab 值）
+        var SUB_TO_BIG = { shequn: 'subsidy', optimize: 'subsidy', sales: 'subsidy', task: 'ops', inject: 'ops', batch: 'ops' };
         var coActiveTab = GM_getValue('tuopin_active_tab', 'optimize');
+        if (!SUB_TO_BIG[coActiveTab]) coActiveTab = 'optimize';   // 未知值兜底
+        // 大 tab 由当前小 tab 所属组反推（sales 已从 ops 迁到 subsidy，旧存储自动迁移）
+        var coActiveBigTab = SUB_TO_BIG[coActiveTab];
+        if (!BIG_TABS[coActiveBigTab]) coActiveBigTab = 'subsidy';
+        // 若记忆的小 tab 不属于当前大 tab，回退到该大 tab 第一个小 tab
+        if (BIG_TABS[coActiveBigTab].subtabs.indexOf(coActiveTab) < 0) {
+          coActiveTab = BIG_TABS[coActiveBigTab].subtabs[0];
+        }
         // datetime 工具：本地时间字符串转 datetime-local 值
         function coLocalDt(d) {
           var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
@@ -4773,18 +5172,27 @@
         var endDt = new Date(startDt); endDt.setMinutes(endDt.getMinutes() + 59);
         var tabBtnStyle = 'flex:1;padding:5px 0;border:none;background:none;cursor:pointer;font-size:12px;font-weight:600;';
         function tabStyle(key) { return tabBtnStyle + (coActiveTab===key ? 'color:#ff7a00;border-bottom:2px solid #ff7a00;margin-bottom:-2px;' : 'color:#999;'); }
+        var bigTabBtnStyle = 'flex:1;padding:6px 0;border:none;background:none;cursor:pointer;font-size:13px;font-weight:700;';
+        function bigTabStyle(key) { return bigTabBtnStyle + (coActiveBigTab===key ? 'color:#fff;background:#ff7a00;border-radius:4px;' : 'color:#999;background:#f5f5f5;border-radius:4px;'); }
         var h = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:' + (coCollapsed ? '0' : '4px') + ';">'
           + '<div style="display:flex;align-items:center;gap:6px;">'
           + '<button id="tuopin-co-toggle" style="border:none;background:none;cursor:pointer;color:#666;font-size:11px;line-height:1;padding:0;">' + coArrow + '</button>'
           + '<span style="font-weight:600;color:#ff7a00;">拓品助手</span></div>'
           + '<span style="font-size:10px;color:#bbb;">折叠需手动展开</span></div>'
           + '<div id="tuopin-co-body" style="display:' + (coCollapsed ? 'none' : 'block') + ';">'
+          // 大 tab 行
+          + '<div style="display:flex;gap:4px;margin-bottom:6px;">'
+          + '<button id="co-bigtab-subsidy" style="' + bigTabStyle('subsidy') + '">补贴优化</button>'
+          + '<button id="co-bigtab-ops" style="' + bigTabStyle('ops') + '">批量化运营</button>'
+          + '</div>'
+          // 小 tab 行（按组显隐：非当前大 tab 组的按钮 display:none）
           + '<div style="display:flex;margin-bottom:8px;border-bottom:2px solid #f0f0f0;">'
-          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + '">社群补贴</button>'
-          + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + '">内容优化</button>'
+          + '<button id="co-tab-btn-shequn" style="' + tabStyle('shequn') + (coActiveBigTab==='subsidy' ? '' : 'display:none;') + '">社群补贴</button>'
+          + '<button id="co-tab-btn-optimize" style="' + tabStyle('optimize') + (coActiveBigTab==='subsidy' ? '' : 'display:none;') + '">内容优化</button>'
+          + '<button id="co-tab-btn-sales" style="' + tabStyle('sales') + (coActiveBigTab==='subsidy' ? '' : 'display:none;') + '">销售数据</button>'
           + '<button id="co-tab-btn-task" style="' + tabStyle('task') + 'display:none;">任务</button>'
-          + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + '">代码植入</button>'
-          + '<button id="co-tab-btn-sales" style="' + tabStyle('sales') + '">销售数据</button>'
+          + '<button id="co-tab-btn-inject" style="' + tabStyle('inject') + (coActiveBigTab==='ops' ? '' : 'display:none;') + '">代码植入</button>'
+          + '<button id="co-tab-btn-batch" style="' + tabStyle('batch') + (coActiveBigTab==='ops' ? '' : 'display:none;') + '">好价批量</button>'
           + '</div>'
           + '<div id="co-tab-optimize" style="display:' + (coActiveTab==='optimize' ? 'block' : 'none') + ';">'
           + '<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">'
@@ -4847,6 +5255,65 @@
           + '<button id="co-sales-dbids-del" style="padding:3px 8px;background:#ff4d4f;color:#fff;border:none;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;">删除</button>'
           + '</div>'
           + '<div id="co-sales-dbids-log" style="font-size:10px;color:#52c41a;margin-top:4px;"></div>'
+          + '</div>'
+          + '</div>'
+          // ── 好价批量工具 tab（独立 tab）──
+          + '<div id="co-tab-batch" style="display:' + (coActiveTab==='batch' ? 'block' : 'none') + ';padding:2px 0;">'
+          + '<div style="font-weight:700;color:#ff7a00;font-size:13px;margin-bottom:10px;letter-spacing:.3px;">好价批量工具</div>'
+          // 筛选条件卡片
+          + '<div style="background:#f8f9fa;border-radius:6px;padding:8px 8px 8px;margin-bottom:8px;">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;">'
+          + '<span style="font-size:10px;font-weight:600;color:#888;letter-spacing:.2px;">筛选条件</span>'
+          + '<button id="co-batch-manage-toggle" style="font-size:9px;color:#1890ff;border:none;background:none;cursor:pointer;padding:0;line-height:1;">管理选项 ▾</button>'
+          + '</div>'
+          + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:5px;">'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">一级品类</label>'
+          + '<select id="co-batch-cate1" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;background:#fff;"></select></div>'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">二级品类</label>'
+          + '<select id="co-batch-cate2" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;background:#fff;"></select></div>'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">商城</label>'
+          + '<select id="co-batch-mall" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;background:#fff;"></select></div>'
+          + '</div>'
+          + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:5px;">'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">频道</label>'
+          + '<select id="co-batch-channel" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;background:#fff;"></select></div>'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">GMV≥</label>'
+          + '<input id="co-batch-gmv" type="number" placeholder="5000" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;"></div>'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">CPS≥</label>'
+          + '<input id="co-batch-cps" type="number" placeholder="200" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;"></div>'
+          + '<div><label style="color:#888;font-size:9px;display:block;margin-bottom:2px;">佣比≥</label>'
+          + '<input id="co-batch-rate" type="number" step="0.01" placeholder="0.08" style="width:100%;padding:4px 3px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;"></div>'
+          + '</div>'
+          // 管理选项折叠区（默认隐藏）
+          + '<div id="co-batch-manage-area" style="display:none;border-top:1px solid #e8e8e8;margin-top:7px;padding-top:7px;">'
+          + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;">'
+          + '<div><div style="font-size:9px;color:#aaa;margin-bottom:2px;">一级品类</div>'
+          + '<div style="display:flex;gap:2px;"><input id="co-batch-cate1-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:10px;box-sizing:border-box;"><button id="co-batch-cate1-add" style="padding:2px 6px;font-size:10px;border:none;border-radius:3px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button></div></div>'
+          + '<div><div style="font-size:9px;color:#aaa;margin-bottom:2px;">二级品类</div>'
+          + '<div style="display:flex;gap:2px;"><input id="co-batch-cate2-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:10px;box-sizing:border-box;"><button id="co-batch-cate2-add" style="padding:2px 6px;font-size:10px;border:none;border-radius:3px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button></div></div>'
+          + '<div><div style="font-size:9px;color:#aaa;margin-bottom:2px;">商城</div>'
+          + '<div style="display:flex;gap:2px;"><input id="co-batch-mall-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:10px;box-sizing:border-box;"><button id="co-batch-mall-add" style="padding:2px 6px;font-size:10px;border:none;border-radius:3px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button></div></div>'
+          + '<div><div style="font-size:9px;color:#aaa;margin-bottom:2px;">频道</div>'
+          + '<div style="display:flex;gap:2px;"><input id="co-batch-channel-input" type="text" placeholder="新增" style="flex:1;min-width:0;padding:2px 4px;border:1px solid #ddd;border-radius:3px;font-size:10px;box-sizing:border-box;"><button id="co-batch-channel-add" style="padding:2px 6px;font-size:10px;border:none;border-radius:3px;background:#1890ff;color:#fff;cursor:pointer;flex-shrink:0;">+</button></div></div>'
+          + '</div>'
+          + '</div>'
+          + '</div>'
+          + '<div id="co-batch-log" style="font-size:10px;color:#ff4d4f;margin-bottom:4px;min-height:14px;"></div>'
+          // 查询结果列表（执行后自动填充）
+          + '<div id="co-batch-results" style="max-height:120px;overflow-y:auto;font-size:10px;border:1px solid #eee;border-radius:4px;background:#fafafa;padding:4px;margin-bottom:8px;display:none;"></div>'
+          // 批量操作卡片
+          + '<div style="background:#fff7f0;border:1px solid #ffe0b2;border-radius:6px;padding:8px;">'
+          + '<div style="font-size:10px;font-weight:600;color:#ff7a00;margin-bottom:7px;">批量操作</div>'
+          + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;">'
+          + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="精选" style="accent-color:#ff7a00;"> 精选提优</label>'
+          + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="回捞" style="accent-color:#ff7a00;"> 回捞</label>'
+          + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="发现" style="accent-color:#ff7a00;"> 发现</label>'
+          + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="加标签" style="accent-color:#ff7a00;"> 加标签</label>'
+          + '</div>'
+          + '<button id="co-batch-run" style="width:100%;padding:7px;background:#ff7a00;color:#fff;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;">执行选中操作</button>'
+          + '<div id="co-batch-run-log" style="font-size:10px;color:#52c41a;margin-top:4px;min-height:14px;"></div>'
+          + '<div id="co-batch-stats" style="font-size:10px;background:#fff;border:1px solid #ffe0b2;border-radius:3px;padding:4px 6px;margin-top:4px;line-height:1.7;display:none;"></div>'
+          + '<div id="co-batch-history" style="margin-top:6px;"></div>'
           + '</div>'
           + '</div>'
           // ── 社群补贴 tab ──
@@ -4950,6 +5417,11 @@
           + '</div>';
         panel.innerHTML = h;
         getRightStack().appendChild(panel);
+        // 面板构建完成后，立即补一次版本更新徽标（若远端已有新版）
+        if (window.__tuopinApplyUpdateBadge) window.__tuopinApplyUpdateBadge();
+
+        var _salesDbReady = false;
+        var _taskOk = false;  // SSO 确认有任务权限后置 true，coSwitchBigTab 用此值而不依赖 GM 缓存
 
         // 用上次缓存的 loginName 先立刻判断任务 tab 可见性，无需等 SSO 返回
         (function() {
@@ -4959,8 +5431,9 @@
           try { wlCache2 = JSON.parse(GM_getValue('tuopin_wl_cache', '{}')); } catch(e) {}
           var list2 = wlCache2.list || [];
           if (cachedName === 'handongxue' || list2.indexOf(cachedName) >= 0) {
+            _taskOk = true;
             var taskTabBtn = document.getElementById('co-tab-btn-task');
-            if (taskTabBtn) taskTabBtn.style.display = '';
+            if (taskTabBtn && coActiveBigTab === 'ops') taskTabBtn.style.display = '';
           }
         })();
 
@@ -4977,8 +5450,14 @@
               // 管理员
               if (loginName === 'handongxue') {
                 coIsAdmin = true;
+                _taskOk = true;
                 var adminPanel = document.getElementById('tuopin-task-admin-panel');
                 if (adminPanel) adminPanel.style.display = 'block';
+                // 管理员在 ops 大 tab 下补显任务小 tab 按钮
+                if (coActiveBigTab === 'ops') {
+                  var _taskBtn = document.getElementById('co-tab-btn-task');
+                  if (_taskBtn) _taskBtn.style.display = '';
+                }
                 // 从 relay 拉最新权限名单并初始化展示
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
@@ -5022,8 +5501,9 @@
               function applyWhitelist(taskWhitelist) {
                 var canSeeTask = loginName === 'handongxue' || taskWhitelist.indexOf(loginName) >= 0;
                 if (canSeeTask) {
+                  _taskOk = true;
                   var taskTabBtn = document.getElementById('co-tab-btn-task');
-                  if (taskTabBtn) taskTabBtn.style.display = '';
+                  if (taskTabBtn && coActiveBigTab === 'ops') taskTabBtn.style.display = '';
                 }
               }
               function applyDbids(dbids) {
@@ -5032,15 +5512,17 @@
                   var adminDbPanel = document.getElementById('co-sales-admin-panel');
                   if (adminDbPanel) { adminDbPanel.style.display = 'block'; coDbidsRefresh(dbids); }
                 }
+                // db 已就绪：销售数据查询在等它时由 coLoadSalesData 内部轮询自动放行
+                _salesDbReady = true;
               }
-              // 检查缓存日期，当天已拉过则直接用本地数据
+              // 权限名单：有本地缓存就直接用，只有管理员增删名单时才会强制刷新缓存
               var wlCache = {};
               try { wlCache = JSON.parse(GM_getValue('tuopin_wl_cache', '{}')); } catch(e) {}
               var dbCache = {};
               try { dbCache = JSON.parse(GM_getValue('tuopin_dbids_cache', '{}')); } catch(e) {}
 
-              if (wlCache.date === _today) {
-                applyWhitelist(wlCache.list || []);
+              if (wlCache.list) {
+                applyWhitelist(wlCache.list);
               } else {
                 GM_xmlhttpRequest({
                   method: 'GET', url: RELAY + '/task/whitelist', timeout: 4000,
@@ -5049,7 +5531,7 @@
                     try {
                       var wd = JSON.parse(wr.responseText || '{}');
                       taskWhitelist = wd.whitelist || [];
-                      GM_setValue('tuopin_wl_cache', JSON.stringify({ date: _today, list: taskWhitelist }));
+                      GM_setValue('tuopin_wl_cache', JSON.stringify({ list: taskWhitelist }));
                     } catch(e) {
                       taskWhitelist = (wlCache.list || []);
                     }
@@ -5257,7 +5739,10 @@
             + ' WHERE article_id = \'' + safeId + '\''
             + ' LIMIT 1';
 
-          supersetQuery(sqlA, function(errA, rA) {
+          // 等 SUPERSET_DB 就绪（SSO+relay 覆盖登录人对应 database_id）再发查询，避免用默认 406 报错。
+          // 轮询 300ms 一次，最多 12s；超时则用当前 db（默认或旧值）兜底发一次，不再卡死。
+          function runSalesQuery() {
+            supersetQuery(sqlA, function(errA, rA) {
             if (errA) {
               var box2 = document.getElementById('co-sales-content');
               if (box2) box2.innerHTML = '<div style="color:#ff4d4f;font-size:11px;padding:8px;">查询失败: ' + coEsc(String(errA).slice(0, 200)) + '</div>';
@@ -5290,6 +5775,17 @@
               renderAll(row);
             });
           });
+          } // end runSalesQuery
+
+          // db 就绪闸门：就绪立即查，否则轮询，12s 兜底强制查
+          (function waitDb() {
+            if (_salesDbReady) { runSalesQuery(); return; }
+            var waited = 0;
+            var iv = setInterval(function () {
+              if (_salesDbReady) { clearInterval(iv); runSalesQuery(); }
+              else if ((waited += 300) >= 12000) { clearInterval(iv); runSalesQuery(); }
+            }, 300);
+          })();
 
           function renderAll(row) {
               if (!box) return;
@@ -5346,9 +5842,17 @@
         }
 
         // Tab 切换
+        var ALL_SUBTABS = ['optimize','sales','shequn','inject','task','batch'];
+        // 切小 tab：显隐内容容器 + 激活样式；若小 tab 属于另一大 tab，连带切大 tab
         function coSwitchTab(key) {
+          // 若 key 属于另一大 tab 组，先切大 tab（会连带显隐本组按钮）
+          var bigOfKey = SUB_TO_BIG[key];
+          if (bigOfKey && bigOfKey !== coActiveBigTab) {
+            coSwitchBigTab(bigOfKey);
+          }
           GM_setValue('tuopin_active_tab', key);
-          ['optimize','sales','shequn','inject','task'].forEach(function(k) {
+          coActiveTab = key;
+          ALL_SUBTABS.forEach(function(k) {
             var body = document.getElementById('co-tab-' + k);
             var btn = document.getElementById('co-tab-btn-' + k);
             if (body) body.style.display = k === key ? 'block' : 'none';
@@ -5366,12 +5870,347 @@
           });
           if (key === 'sales') coLoadSalesData();
         }
-        ['optimize','sales','shequn','inject','task'].forEach(function(k) {
+        // 切大 tab：隐藏另一组小 tab 按钮、显示本组按钮；恢复本组上次小 tab
+        function coSwitchBigTab(bigKey) {
+          if (!BIG_TABS[bigKey]) return;
+          coActiveBigTab = bigKey;
+          GM_setValue('tuopin_active_big_tab', bigKey);
+          // 大 tab 按钮激活样式
+          ['subsidy','ops'].forEach(function(bk) {
+            var bbtn = document.getElementById('co-bigtab-' + bk);
+            if (bbtn) {
+              if (bk === bigKey) { bbtn.style.color = '#fff'; bbtn.style.background = '#ff7a00'; }
+              else { bbtn.style.color = '#999'; bbtn.style.background = '#f5f5f5'; }
+            }
+          });
+          // 各组小 tab 按钮显隐（_taskOk 由 SSO 异步设置；兜底读 GM 缓存防 SSO 慢/失败）
+          var canSeeTask = _taskOk;
+          if (!canSeeTask) {
+            var _wc = {}; try { _wc = JSON.parse(GM_getValue('tuopin_wl_cache', '{}')); } catch(e) {}
+            var _cn = GM_getValue('tuopin_my_name', '');
+            if (_cn && (_cn === 'handongxue' || (_wc.list || []).indexOf(_cn) >= 0)) canSeeTask = true;
+          }
+          Object.keys(BIG_TABS).forEach(function(bk) {
+            BIG_TABS[bk].subtabs.forEach(function(sub) {
+              var sbtn = document.getElementById('co-tab-btn-' + sub);
+              if (!sbtn) return;
+              if (bk === bigKey) {
+                // 本组：显示（task 例外，无权限不显示）
+                if (sub === 'task') sbtn.style.display = canSeeTask ? '' : 'none';
+                else sbtn.style.display = '';
+              } else {
+                sbtn.style.display = 'none';
+              }
+            });
+          });
+          // 取本组上次小 tab（若不在本组则取本组第一个）
+          var lastSub = GM_getValue('tuopin_active_tab', '');
+          if (BIG_TABS[bigKey].subtabs.indexOf(lastSub) < 0) {
+            lastSub = BIG_TABS[bigKey].subtabs[0];
+          }
+          coSwitchTab(lastSub);
+        }
+        ALL_SUBTABS.forEach(function(k) {
           var btn = document.getElementById('co-tab-btn-' + k);
           if (btn) btn.onclick = function() { coSwitchTab(k); };
         });
-        // 若默认 tab 是 sales，立即加载
+        // 大 tab 按钮绑定
+        var bigSubBtn = document.getElementById('co-bigtab-subsidy');
+        if (bigSubBtn) bigSubBtn.onclick = function() { coSwitchBigTab('subsidy'); };
+        var bigOpsBtn = document.getElementById('co-bigtab-ops');
+        if (bigOpsBtn) bigOpsBtn.onclick = function() { coSwitchBigTab('ops'); };
+        // 若默认 tab 是 sales，立即加载（有缓存则秒出；无缓存时 coLoadSalesData 内部会等 SUPERSET_DB 就绪再发查询）
         if (coActiveTab === 'sales') coLoadSalesData();
+
+        // ── 好价批量工具（batch tab）──
+        (function() {
+          var _batchResults = [];   // 当前查询结果：[{articleId, articleUrl, title, mall, tag, gmv, cps, rate}]
+          function renderBatchHistory() {
+            var box = document.getElementById('co-batch-history');
+            if (!box) return;
+            var list = [];
+            try { list = JSON.parse(GM_getValue('tuopin_batch_history', '[]')); } catch(e) {}
+            if (!list.length) { box.innerHTML = ''; return; }
+            box.innerHTML = '<div style="font-size:10px;color:#aaa;margin-bottom:3px;">执行明细</div>'
+              + list.slice().reverse().map(function(item, revIdx) {
+                var idx = list.length - 1 - revIdx;
+                var detailId = 'co-bh-detail-' + idx;
+                var summary = '✓' + item.success + ' ⊘' + (item.soldout + item.expired) + ' ✗' + item.failed;
+                var statusColor = item.failed > 0 ? '#ff4d4f' : '#52c41a';
+                return '<div style="border:1px solid #f0f0f0;border-radius:4px;margin-bottom:4px;overflow:hidden;">'
+                  + '<div onclick="var d=document.getElementById(\'' + detailId + '\');d.style.display=d.style.display===\'none\'?\'block\':\'none\';" '
+                  + 'style="display:flex;justify-content:space-between;align-items:center;padding:4px 6px;cursor:pointer;background:#fafafa;">'
+                  + '<span style="font-size:10px;color:#555;">' + coEsc(item.time) + ' 执行' + coEsc(item.skills) + '</span>'
+                  + '<span style="font-size:10px;color:' + statusColor + ';flex-shrink:0;margin-left:4px;">' + summary + '</span>'
+                  + '</div>'
+                  + '<div id="' + detailId + '" style="display:none;padding:4px 6px;font-size:10px;line-height:1.7;border-top:1px solid #f0f0f0;">'
+                  + '<div style="color:#52c41a;">✓ 成功 ' + item.success + (item.successIds && item.successIds.length ? '：' + item.successIds.join(', ') : '') + '</div>'
+                  + '<div style="color:#fa8c16;">⊘ 售罄 ' + item.soldout + ' / 过期 ' + item.expired
+                    + ((item.soldoutIds && item.soldoutIds.length) || (item.expiredIds && item.expiredIds.length)
+                      ? '：' + (item.soldoutIds || []).concat(item.expiredIds || []).join(', ') : '') + '</div>'
+                  + '<div style="color:#ff4d4f;">✗ 失败 ' + item.failed + (item.failedIds && item.failedIds.length ? '：' + item.failedIds.join(', ') : '') + '</div>'
+                  + (item.failedDetails && item.failedDetails.length ? '<div style="color:#ff4d4f;font-size:9px;margin-top:2px;">' + item.failedDetails.map(function(d){ return coEsc(d); }).join('<br>') + '</div>' : '')
+                  + '</div>'
+                  + '</div>';
+              }).join('');
+          }
+          function saveBatchHistory(item) {
+            var list = [];
+            try { list = JSON.parse(GM_getValue('tuopin_batch_history', '[]')); } catch(e) {}
+            list.push(item);
+            if (list.length > 20) list = list.slice(list.length - 20);
+            GM_setValue('tuopin_batch_history', JSON.stringify(list));
+            renderBatchHistory();
+          }
+          function batchLog(msg, color) {
+            var el = document.getElementById('co-batch-log');
+            if (el) { el.textContent = msg; el.style.color = color || '#ff4d4f'; }
+          }
+          function batchRunLog(msg) {
+            var el = document.getElementById('co-batch-run-log');
+            if (el) el.textContent = msg;
+          }
+          function coEsc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+          // 构造批量查询 SQL — 空字段 = 不筛选（全量查询）
+          function buildBatchSQL() {
+            function selVal(id) {
+              var el = document.getElementById(id);
+              return (el && el.value) ? el.value.trim() : '';
+            }
+            function numVal(id) {
+              var el = document.getElementById(id);
+              var v = (el && el.value) ? parseFloat(el.value) : NaN;
+              return isNaN(v) ? 0 : v;
+            }
+            function sqlList(s) {
+              var arr = s.split(',').map(function(x){ return x.trim(); }).filter(Boolean);
+              if (!arr.length) return '';
+              return "('" + arr.map(function(x){ return x.replace(/'/g, "''"); }).join("','") + "')";
+            }
+            var cate1 = selVal('co-batch-cate1');
+            var cate2 = selVal('co-batch-cate2');
+            var mall = selVal('co-batch-mall');
+            var channel = selVal('co-batch-channel');
+            var gmv = numVal('co-batch-gmv');
+            var cps = numVal('co-batch-cps');
+            var rateStr = (document.getElementById('co-batch-rate') || {}).value || '';
+            var rate = rateStr.trim() !== '' ? parseFloat(rateStr) : NaN;
+            var where = [];
+            if (cate1) where.push("cate1_name IN " + sqlList(cate1));
+            if (cate2) where.push("cate2_name IN " + sqlList(cate2));
+            if (mall) where.push("mall_name IN " + sqlList(mall));
+            if (channel) where.push("channel_name IN " + sqlList(channel));
+            // 发布时间：近 3 天（baoliao_time 或 first_pub_time）
+            where.push("((toDate(faxian_time) != '1970-01-01' AND toDate(baoliao_time) BETWEEN today()-2 AND today()) OR (toDate(baoliao_time) = '1970-01-01' AND toDate(first_pub_time) BETWEEN today()-2 AND today()))");
+            var having = [];
+            if (gmv > 0) having.push("ROUND(sum(ascribe_gmv)) >= " + gmv);
+            if (cps > 0) having.push("sum(ascribe_cps) >= " + cps);
+            if (!isNaN(rate) && rate > 0) having.push("toFloat64OrNull(substring(commission, position(':' IN commission) + 1, 4)) >= " + rate);
+            var sql = "SELECT"
+              + " substring(commission, position(':' IN commission) + 1, 4) AS `佣比`,"
+              + " channel_name, concat('https://www.smzdm.com/p/', article_id, '/') AS `文章ID`, article_subtitle AS `到手价`,"
+              + " ROUND(sum(ascribe_gmv)) AS `归因GMV`, sum(ascribe_cps) AS `归因CPS`, ROUND(sum(ascribe_order)) AS `归因订单量`,"
+              + " article_title AS `文章名称`, youhui_shop_name AS `店铺名称`, faxian_time AS `发布发现时间`,"
+              + " article_pro_status AS `文章状态`,"
+              + " CASE WHEN tag_name LIKE '%绝对值%' THEN '绝对值' WHEN tag_name LIKE '%手慢无%' THEN '手慢无' WHEN tag_name LIKE '%神价格%' THEN '神价格' WHEN tag_name LIKE '%白菜党%' THEN '白菜党' WHEN tag_name LIKE '%闭眼跟着买%' THEN '闭眼跟着买' WHEN tag_name LIKE '%有点意思%' THEN '有点意思' WHEN tag_name LIKE '%必领神券%' THEN '必领神券' WHEN tag_name LIKE '%淘金币可用%' THEN '淘金币可用' WHEN tag_name LIKE '%有券的上%' THEN '有券的上' WHEN tag_name LIKE '%今日必买%' THEN '今日必买' WHEN tag_name LIKE '%yszb%' THEN 'yszb' WHEN tag_name LIKE '%phbdj%' THEN 'phbdj' WHEN tag_name LIKE '%困难好价%' THEN '困难好价' WHEN tag_name LIKE '%复杂好价%' THEN '复杂好价' ELSE '' END AS `标签`,"
+              + " baoliao_user_nickname AS `达人名称`, first_pub_time AS `首次发布时间`, mall_name AS `商城`,"
+              + " cate2_name AS `二级品类`"
+              + " FROM bi_app.dm_zdm_haojia_a final"
+              + " WHERE " + where.join(' AND ')
+              + " GROUP BY commission, channel_name, article_id, article_subtitle, article_pro_status, tag_name, faxian_time, article_title, baoliao_user_nickname, first_pub_time, mall_name, youhui_shop_name, cate2_name, digital_price";
+            if (having.length) sql += " HAVING " + having.join(' AND ');
+            sql += " ORDER BY `归因GMV` DESC";
+            return sql;
+          }
+          function runBatchQuery(onDone) {
+            var sql = buildBatchSQL();
+            batchLog('查询中...', '#1890ff');
+            var resBox = document.getElementById('co-batch-results');
+            if (resBox) resBox.innerHTML = '<div style="color:#bbb;text-align:center;padding:8px 0;">查询中...</div>';
+            GM_xmlhttpRequest({
+              method: 'POST', url: SUPERSET + '/api/v1/sqllab/execute/',
+              headers: { 'Content-Type': 'application/json', 'Referer': SUPERSET + '/sqllab/' },
+              data: JSON.stringify({ database_id: SUPERSET_DB, schema: 'bi_app', sql: sql, json: true, runAsync: false, expand_data: true }),
+              withCredentials: true, timeout: 35000,
+              onload: function(r) {
+                try {
+                  var j = JSON.parse(r.responseText);
+                  if (j.errors && j.errors.length) { batchLog('查询失败: ' + ((j.errors[0] && j.errors[0].message) || '').slice(0,100)); if (onDone) onDone(false); return; }
+                  var rows = j.data || (j.result && j.result.data) || j.result || j.results || [];
+                  _batchResults = (Array.isArray(rows) ? rows : []).map(function(row) {
+                    return {
+                      articleId: String(row['文章ID'] || '').match(/\/p\/(\d+)/),
+                      articleUrl: row['文章ID'] || '',
+                      title: row['文章名称'] || '',
+                      mall: row['商城'] || '',
+                      tag: row['标签'] || '',
+                      gmv: row['归因GMV'] || 0,
+                      cps: row['归因CPS'] || 0,
+                      rate: row['佣比'] || ''
+                    };
+                  }).filter(function(x){ return x.articleUrl; });
+                  _batchResults.forEach(function(x){ x.articleId = x.articleId ? x.articleId[1] : ''; });
+                  renderBatchResults();
+                  batchLog('查询完成：共 ' + _batchResults.length + ' 条', '#52c41a');
+                  if (onDone) onDone(true);
+                } catch(e) { batchLog('解析失败: ' + e.message); if (onDone) onDone(false); }
+              },
+              onerror: function() { batchLog('请求失败(网络)'); if (onDone) onDone(false); },
+              ontimeout: function() { batchLog('查询超时(>35s)'); if (onDone) onDone(false); }
+            });
+          }
+          function renderBatchResults() {
+            var box = document.getElementById('co-batch-results');
+            if (!box) return;
+            box.style.display = 'block';
+            if (!_batchResults.length) { box.innerHTML = '<div style="color:#bbb;text-align:center;padding:8px 0;">暂无数据</div>'; return; }
+            box.innerHTML = _batchResults.map(function(x) {
+              return '<div style="padding:4px 2px;border-bottom:1px solid #f0f0f0;">'
+                + '<div style="color:#333;font-weight:500;word-break:break-all;" title="' + coEsc(x.title) + '">' + coEsc(x.title).slice(0,28) + '</div>'
+                + '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:1px;">'
+                + '<a href="' + coEsc(x.articleUrl) + '" target="_blank" style="color:#1890ff;font-size:9px;">' + x.articleId + '</a>'
+                + '<span style="color:#999;font-size:9px;">GMV ' + coEsc(x.gmv) + ' · ' + coEsc(x.mall) + '</span>'
+                + '</div></div>';
+            }).join('');
+          }
+          function runSelected() {
+            var skills = Array.prototype.slice.call(document.querySelectorAll('.co-batch-skill:checked')).map(function(cb){ return cb.value; });
+            if (!skills.length) { batchRunLog('请勾选至少一个操作'); return; }
+            var runBtn = document.getElementById('co-batch-run');
+            if (runBtn) { runBtn.disabled = true; runBtn.textContent = '执行中...'; }
+            if (!_batchResults.length) {
+              batchRunLog('先查询文章...');
+              runBatchQuery(function(ok) {
+                if (!ok || !_batchResults.length) { batchRunLog(ok ? '查询结果为空' : '查询失败'); if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; } return; }
+                startBatchSkill(skills, runBtn);
+              });
+            } else {
+              startBatchSkill(skills, runBtn);
+            }
+          }
+          function startBatchSkill(skills, runBtn) {
+            var ids = _batchResults.map(function(x){ return x.articleId; }).filter(Boolean);
+            if (!ids.length) { batchRunLog('无有效文章ID'); if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; } return; }
+            GM_setValue('tuopin_batch_skill', JSON.stringify({ skills: skills, ids: ids, idx: 0, results: [], startedAt: Date.now() }));
+            GM_setValue('tuopin_batch_skill_result', '');
+            // 记录本次执行时间和操作
+            var now = new Date();
+            var timeStr = (now.getMonth()+1) + '月' + now.getDate() + '日' + now.getHours() + '点' + String(now.getMinutes()).padStart(2,'0') + '分';
+            var histItem = { time: timeStr, skills: skills.join('/'), total: ids.length, success: 0, soldout: 0, expired: 0, failed: 0, successIds: [], soldoutIds: [], expiredIds: [], failedIds: [], failedDetails: [] };
+            batchRunLog('已启动：' + ids.length + '篇 × [' + skills.join('/') + ']');
+            var firstId = ids[0];
+            GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + firstId, { active: true, insert: true });
+            var statBox = document.getElementById('co-batch-stats');
+            if (statBox) statBox.style.display = 'block';
+            var total = ids.length;
+            var pollN = 0;
+            var pollItv = setInterval(function() {
+              pollN++;
+              var raw = GM_getValue('tuopin_batch_skill_result', '');
+              var results = [];
+              try { results = raw ? JSON.parse(raw) : []; } catch(e) {}
+              renderBatchStats(results, total);
+              var task = GM_getValue('tuopin_batch_skill', '');
+              if (!task || pollN > 600) {
+                clearInterval(pollItv);
+                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; }
+                batchRunLog('执行结束');
+                // 写入历史
+                results.forEach(function(r) {
+                  var s = r.status, d = (r.detail || '');
+                  if (s === 'success') { histItem.success++; histItem.successIds.push(r.id); }
+                  else if (s === 'skipped') {
+                    if (d.indexOf('售罄') >= 0) { histItem.soldout++; histItem.soldoutIds.push(r.id); }
+                    else { histItem.expired++; histItem.expiredIds.push(r.id); }
+                  } else { histItem.failed++; histItem.failedIds.push(r.id); histItem.failedDetails.push(r.id + ': ' + d); }
+                });
+                saveBatchHistory(histItem);
+              }
+            }, 2000);
+          }
+          function renderBatchStats(results, total) {
+            var box = document.getElementById('co-batch-stats');
+            if (!box) return;
+            var done = results.length;
+            var success = 0, soldout = 0, expired = 0, failed = 0;
+            var failedIds = [];
+            var failedDetails = [];
+            results.forEach(function(r) {
+              var s = r.status, d = (r.detail || '');
+              if (s === 'success') success++;
+              else if (s === 'skipped') {
+                if (d.indexOf('售罄') >= 0) soldout++;
+                else if (d.indexOf('过期') >= 0) expired++;
+                else { soldout++; }
+              } else { failed++; failedIds.push(r.id); failedDetails.push(r.id + ': ' + d); }
+            });
+            var html = '<div>进度：' + done + '/' + total + '</div>'
+              + '<div style="color:#52c41a;">✓ 成功 ' + success + '</div>'
+              + '<div style="color:#fa8c16;">⊘ 售罄 ' + soldout + ' / 过期 ' + expired + '</div>'
+              + '<div style="color:#ff4d4f;">✗ 失败 ' + failed + (failedIds.length ? '：' + failedIds.join(', ') : '') + '</div>'
+              + (failedDetails.length ? '<div style="color:#ff4d4f;font-size:9px;margin-top:2px;">' + failedDetails.map(function(d){ return coEsc(d); }).join('<br>') + '</div>' : '');
+            box.innerHTML = html;
+          }
+          // 管理选项折叠
+          var manageToggle = document.getElementById('co-batch-manage-toggle');
+          var manageArea = document.getElementById('co-batch-manage-area');
+          // 初始化渲染历史明细
+          renderBatchHistory();
+          if (manageToggle && manageArea) {
+            manageToggle.onclick = function() {
+              var open = manageArea.style.display !== 'none';
+              manageArea.style.display = open ? 'none' : 'block';
+              manageToggle.textContent = open ? '管理选项 ▾' : '管理选项 ▴';
+            };
+          }
+          // 品类/商城下拉：GM 存 list，select 渲染，添加按钮录入
+          function batchListGet(key) { try { return JSON.parse(GM_getValue(key, '[]')) || []; } catch(e) { return []; } }
+          function batchListSave(key, list) { GM_setValue(key, JSON.stringify(list)); }
+          function batchRefreshSel(selId, gmKey, single) {
+            var sel = document.getElementById(selId);
+            if (!sel) return;
+            var list = batchListGet(gmKey);
+            if (single) {
+              var cur = GM_getValue('tuopin_batch_sel_' + selId, '') || '';
+              sel.innerHTML = '<option value="">请选择</option>';
+              list.forEach(function(v) { var o = document.createElement('option'); o.value = v; o.textContent = v; if (v === cur) o.selected = true; sel.appendChild(o); });
+              if (!sel.onchange) sel.onchange = function() { GM_setValue('tuopin_batch_sel_' + selId, this.value); };
+            } else {
+              var selected = {};
+              for (var i = 0; i < sel.options.length; i++) if (sel.options[i].selected) selected[sel.options[i].value] = true;
+              sel.innerHTML = '';
+              list.forEach(function(v) { var o = document.createElement('option'); o.value = v; o.textContent = v; if (selected[v]) o.selected = true; sel.appendChild(o); });
+            }
+          }
+          function wireBatchAdd(selId, gmKey, inputId, addBtnId, single) {
+            var addBtn = document.getElementById(addBtnId);
+            if (!addBtn) return;
+            addBtn.onclick = function() {
+              var inp = document.getElementById(inputId);
+              var v = (inp && inp.value || '').trim();
+              if (!v) return;
+              var list = batchListGet(gmKey);
+              if (list.indexOf(v) < 0) { list.push(v); batchListSave(gmKey, list); }
+              batchRefreshSel(selId, gmKey, single);
+              if (inp) inp.value = '';
+            };
+          }
+          // 频道预置3个值（首次）
+          if (!batchListGet('tuopin_batch_channel').length) {
+            batchListSave('tuopin_batch_channel', ['发现', '国内优惠', '个人主页']);
+          }
+          batchRefreshSel('co-batch-cate1', 'tuopin_batch_cate1', true);
+          batchRefreshSel('co-batch-cate2', 'tuopin_batch_cate2', true);
+          batchRefreshSel('co-batch-mall', 'tuopin_batch_mall', true);
+          batchRefreshSel('co-batch-channel', 'tuopin_batch_channel', true);
+          wireBatchAdd('co-batch-cate1', 'tuopin_batch_cate1', 'co-batch-cate1-input', 'co-batch-cate1-add', true);
+          wireBatchAdd('co-batch-cate2', 'tuopin_batch_cate2', 'co-batch-cate2-input', 'co-batch-cate2-add', true);
+          wireBatchAdd('co-batch-mall', 'tuopin_batch_mall', 'co-batch-mall-input', 'co-batch-mall-add', true);
+          wireBatchAdd('co-batch-channel', 'tuopin_batch_channel', 'co-batch-channel-input', 'co-batch-channel-add', true);
+          // 执行按钮（id 唯一，无重复占位）
+          var rBtn = document.getElementById('co-batch-run');
+          if (rBtn) rBtn.onclick = runSelected;
+        })();
 
         // ── 社群补贴 tab 逻辑 ──
         (function() {
@@ -5404,12 +6243,19 @@
             } catch(e) {}
           })();
 
-          // 渲染今日社群补贴记录（本地）
+          // 渲染今日社群补贴记录（本地，仅当天）
           function renderShequnToday() {
             var box = document.getElementById('tuopin-shequn-today-list');
             if (!box) return;
             var rec = {};
             try { rec = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+            // 跨天判定：存储 date 不是今天则视为无记录，并主动清掉过期数据
+            var todayKey = (function(){ var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;}; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); })();
+            if (rec.date !== todayKey) {
+              if (rec.date) { try { GM_setValue('tuopin_shequn_today_forms', JSON.stringify({ date: todayKey, list: [] })); } catch(e) {} }
+              box.innerHTML = '<div style="color:#bbb;">暂无记录</div>';
+              return;
+            }
             var lst = rec.list || [];
             if (!lst.length) {
               box.innerHTML = '<div style="color:#bbb;">暂无记录</div>';
@@ -5443,6 +6289,9 @@
           (function patchWxLinksFromPanel() {
             var rec3 = {};
             try { rec3 = JSON.parse(GM_getValue('tuopin_shequn_today_forms', '{}')); } catch(e) {}
+            // 仅处理当天记录，跨天不补
+            var todayKey3 = (function(){ var d = new Date(); var p = function(n){return n<10?'0'+n:''+n;}; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); })();
+            if (rec3.date !== todayKey3) return;
             var lst3 = rec3.list || [];
             var missing = lst3.filter(function(it) {
               if (it.wxLink) return false;
@@ -5593,7 +6442,16 @@
             var email = (emailEl && emailEl.value.trim()) || '';
             var goodsName = (goodsNameEl && goodsNameEl.value.trim()) || '';
             var cleanLink = (cleanLinkEl && cleanLinkEl.value.trim()) || '';
-            if (!amt || amt <= 0) { shequnLog('请填写补贴金额'); return; }
+            if (!amt || amt <= 0) {
+              shequnLog('请填写补贴金额');
+              if (amtEl) {
+                amtEl.style.borderColor = '#ff4d4f';
+                amtEl.focus();
+                var _restoreAmt = function() { amtEl.style.borderColor = ''; amtEl.removeEventListener('input', _restoreAmt); };
+                amtEl.addEventListener('input', _restoreAmt);
+              }
+              return;
+            }
             if (!email) { shequnLog('请填写邮箱'); return; }
             // 优先用接口返回的商城，fallback 从 cleanLink 域名推断
             var mallName = __shequnMall || '淘系';
@@ -6077,7 +6935,7 @@
                 if (logEl) logEl.style.color = res.ok ? '#52c41a' : '#ff4d4f';
                 if (logEl) logEl.textContent = res.ok ? ('✓ 已同步，共 ' + names.length + ' 个用户') : ('✗ ' + (res.error || '失败'));
                 if (res.ok && cb) {
-                  GM_setValue('tuopin_wl_cache', JSON.stringify({ date: coTodayStr(), list: names }));
+                  GM_setValue('tuopin_wl_cache', JSON.stringify({ list: names }));
                   cb(names);
                 }
               } catch(e) { if (logEl) logEl.textContent = '✗ 解析失败'; }
@@ -6126,6 +6984,10 @@
           var actId = coIsAdmin ? ((document.getElementById('tuopin-task-actid-sel') || {}).value || '1261').trim() : '1261';
           var rewardId = coIsAdmin ? ((document.getElementById('tuopin-task-rewardid-sel') || {}).value || '9398').trim() : '9398';
           var who = (GM_getValue('tuopin_my_name', '') || '匿名');
+          if (!who || who === '匿名') {
+            alert('用户身份未识别（SSO 未完成），请等待页面完全加载后再试');
+            return;
+          }
 
           // 预先算好完整文案（与 task-bgm 自动填表保持一致）
           var articleTitle = coGetArticleTitle ? coGetArticleTitle() : '';
@@ -8147,6 +9009,8 @@
       '</div>';
     t.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;width:170px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
     document.body.appendChild(t);
+    // 面板构建完成后，立即补一次版本更新徽标（若远端已有新版）
+    if (window.__tuopinApplyUpdateBadge) window.__tuopinApplyUpdateBadge();
 
     // 折叠/展开
     document.getElementById('tb-header').onclick = function() {
@@ -8899,6 +9763,8 @@
       '</div>';
     t.style.cssText = 'position:fixed;top:80px;right:20px;z-index:99999;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.15);padding:12px 16px;width:170px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
     document.body.appendChild(t);
+    // 面板构建完成后，立即补一次版本更新徽标（若远端已有新版）
+    if (window.__tuopinApplyUpdateBadge) window.__tuopinApplyUpdateBadge();
 
     // 折叠/展开
     document.getElementById('jd-tb-header').onclick = function() {
