@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.8.0
+// @version      5.8.3
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2539,11 +2539,17 @@
         }
 
         // DOM 就绪后尽快跑（processOne 内部会等 toolBox，启动延迟 100ms 即可）
+        var _runFired = false;
+        function _fireRun() { if (_runFired) return; _runFired = true; setTimeout(run, 100); }
         if (document.readyState === 'complete' || document.readyState === 'interactive') {
-          setTimeout(run, 100);
+          _fireRun();
         } else {
-          window.addEventListener('DOMContentLoaded', function(){ setTimeout(run, 100); });
+          window.addEventListener('DOMContentLoaded', _fireRun);
         }
+        // bfcache 恢复时（Chrome 从缓存恢复页面不触发 DOMContentLoaded）也触发 run
+        window.addEventListener('pageshow', function(e) {
+          if (e.persisted) { _runFired = false; _fireRun(); }
+        });
         // 后台轮询：检测任务被手动结束（_terminated），立即关闭 tab
         var _bsTerminatePoller = setInterval(function() {
           try {
@@ -6276,7 +6282,9 @@
             var tid = String(Date.now());
             var now = new Date();
             var timeLabel = (now.getMonth()+1) + '月' + now.getDate() + '日' + now.getHours() + '点' + String(now.getMinutes()).padStart(2,'0') + '分';
-            var taskObj = { tid: tid, skills: skills, ids: ids, idx: 0, results: [], startedAt: Date.now(), tags: tags || [], syncSkipTime: syncSkipTime || '', queryResults: _batchResults, queryLabel: timeLabel + ' ' + skills.join('/') };
+            var taskObj = { tid: tid, skills: skills, ids: ids, idx: 0, results: [], startedAt: Date.now(), tags: tags || [], syncSkipTime: syncSkipTime || '',
+              queryResults: _batchResults.map(function(x){ return { articleId: x.articleId, articleUrl: x.articleUrl, title: x.title, mall: x.mall, gmv: x.gmv }; }),
+              queryLabel: timeLabel + ' ' + skills.join('/') };
             // 写入 tasks map
             var tasks = {};
             try { tasks = JSON.parse(GM_getValue('tuopin_batch_tasks', '{}')) || {}; } catch(e) {}
@@ -6425,6 +6433,7 @@
           function startTaskPolling(tid) {
             if (_pollTimers[tid]) { clearInterval(_pollTimers[tid]); }
             var pollN = 0;
+            var lastSeenTask = null;  // 记住上一次读到的 task，供任务消失时归档用
             _pollTimers[tid] = setInterval(function() {
               pollN++;
               var tasks = {};
@@ -6432,14 +6441,14 @@
               var t = tasks[tid];
               if (!t || pollN > 600) {
                 clearInterval(_pollTimers[tid]); delete _pollTimers[tid];
-                if (t && t.results) {
-                  // 任务自然完成（edit tab 删除了 task），归档历史
+                // 用最后一次读到的 task 数据归档（edit tab 自然完成后会删掉 task）
+                var taskForArchive = lastSeenTask;
+                if (taskForArchive && (taskForArchive.results || []).length > 0) {
                   var now2 = new Date();
                   var timeStr2 = (now2.getMonth()+1) + '月' + now2.getDate() + '日' + now2.getHours() + '点' + String(now2.getMinutes()).padStart(2,'0') + '分';
-                  var histItem2 = buildHistItem(timeStr2, t);
+                  var histItem2 = buildHistItem(timeStr2, taskForArchive);
                   saveBatchHistory(histItem2);
-                } else if (!t) {
-                  // task 被 edit tab 自然完成后删掉了，从最后读到的结果归档
+                  renderBatchHistory();
                 }
                 var card = document.getElementById('co-task-card-' + tid);
                 if (card) card.remove();
@@ -6447,7 +6456,18 @@
                 batchRunLog('任务已完成');
                 return;
               }
+              lastSeenTask = t;  // 每次轮询都更新快照
               if (t._stopped) return;  // 暂停中，不刷新进度
+              // 卡住检测：任务在跑但 startedAt 超过 5 分钟没更新（edit tab 可能挂了）
+              var stuckMs = Date.now() - (t.startedAt || 0);
+              if (stuckMs > 120000 && t.idx < t.ids.length) {
+                batchRunLog('任务 ' + tid.slice(-4) + ' 检测到卡住(' + Math.floor(stuckMs/60000) + '分钟无进展)，重开编辑页...');
+                // 刷新 startedAt 防止重复触发
+                t.startedAt = Date.now();
+                tasks[tid] = t;
+                GM_setValue('tuopin_batch_tasks', JSON.stringify(tasks));
+                GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + t.ids[t.idx], { active: false, insert: true });
+              }
               renderActiveTask(tid, t);
             }, 2000);
           }
@@ -6672,9 +6692,16 @@
               if (!t || !t.ids || t.idx == null) return;
               if (t._terminated) return;  // 已终止，跳过
               renderActiveTask(tid, t);
-              // 恢复查询结果 tab
+              // 恢复查询结果 tab（有 queryResults 用原始数据，否则用 ids 构建最简列表）
+              var label = t.queryLabel || ((t.skills||[]).join('/') + ' ' + (t.ids||[]).length + '篇');
               if (t.queryResults && t.queryResults.length) {
-                renderResultTab(tid, t.queryResults, t.queryLabel || tid);
+                renderResultTab(tid, t.queryResults, label);
+              } else if (t.ids && t.ids.length) {
+                // 旧任务没有 queryResults，用 ids 构建简单列表
+                var fallbackResults = (t.ids || []).map(function(id) {
+                  return { articleId: id, articleUrl: 'https://youhui.bgm.smzdm.com/p/' + id, title: id, mall: '', gmv: '' };
+                });
+                renderResultTab(tid, fallbackResults, label);
               }
               if (!t._stopped) startTaskPolling(tid);
               activeCount++;
