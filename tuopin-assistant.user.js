@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.7.37
+// @version      5.7.49
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -2252,6 +2252,7 @@
         }
 
         // 加标签（API：搜索→写入 #acticle_binded_tag→bindedTagInit）
+        // 加标签：fetch 搜索标签名，返回 {ok, tagId, tag, msg}，不直接写 DOM（避免并发竞态）
         function addTagApi(tag) {
           return new Promise(function(resolve) {
             fetch('/youhui_action/ajax_add_tag', {
@@ -2260,23 +2261,16 @@
               body: 'name=' + encodeURIComponent(tag)
             }).then(function(r){ return r.json(); }).then(function(j) {
               if (j && Array.isArray(j) && j.length > 0) {
-                var tagId = j[0].id;
-                var obj = document.getElementById('acticle_binded_tag');
-                if (obj) {
-                  var ids = obj.value ? obj.value.split(',') : [];
-                  if (ids.indexOf(String(tagId)) < 0) { ids.push(String(tagId)); obj.value = ids.join(','); }
-                }
-                if (window.toolBox && typeof toolBox.bindedTagInit === 'function') toolBox.bindedTagInit();
-                resolve('加标签:成功(id=' + tagId + ')');
+                resolve({ ok: true, tagId: j[0].id, tag: tag });
               } else {
-                resolve('加标签:未找到「' + tag + '」');
+                resolve({ ok: false, tag: tag, msg: '未找到「' + tag + '」' });
               }
-            }).catch(function(e){ resolve('加标签:异常-' + e.message); });
+            }).catch(function(e){ resolve({ ok: false, tag: tag, msg: '异常-' + e.message }); });
           });
         }
 
         // 处理一篇文章（对齐去补贴保存逻辑：等按钮出现→DOM操作→点按钮→处理弹窗→检测成功）
-        async function processOne(id, skills) {
+        async function processOne(id, skills, tags, syncSkipTime) {
           var log = [];
 
           // 等"保存修改"按钮出现即认为页面就绪（对齐去补贴方式，不等 toolBox）
@@ -2293,10 +2287,12 @@
             await sleep(200); readyWait += 200;
           }
 
-          // 加标签请求提前 fire（回捞/加标签，与 DOM 操作并行）
-          var _addTagPromise = null;
-          if (skills.indexOf('回捞') >= 0 || skills.indexOf('加标签') >= 0) {
-            _addTagPromise = addTagApi(BATCH_TAG);
+          // 加标签请求提前 fire（与 DOM 操作并行，多个标签并行 fire）
+          var _addTagPromises = [];
+          if (skills.indexOf('加标签') >= 0 && tags && tags.length) {
+            for (var _ti = 0; _ti < tags.length; _ti++) {
+              _addTagPromises.push(addTagApi(tags[_ti]));
+            }
           }
 
           // 跳过检查
@@ -2315,6 +2311,19 @@
             var set = (statusEls[sei].innerText || statusEls[sei].textContent || '').trim();
             if (set.indexOf('过期') >= 0 || set.indexOf('结束') >= 0) return { id: id, status: 'skipped', detail: '已过期(状态标签):' + set.slice(0, 20) };
             if (set.indexOf('售罄') >= 0) return { id: id, status: 'skipped', detail: '已售罄(状态标签):' + set.slice(0, 20) };
+          }
+
+          // 同步首页时间跳过：若设置了阈值，且页面 article_sync_home_time > 阈值，则跳过
+          if (syncSkipTime) {
+            var syncTimeEl = document.getElementById('article_sync_home_time');
+            var syncTimeVal = syncTimeEl ? (syncTimeEl.value || '').trim() : '';
+            if (syncTimeVal) {
+              var pageTs = new Date(syncTimeVal.replace(' ', 'T')).getTime();
+              var skipTs = new Date(syncSkipTime).getTime();
+              if (!isNaN(pageTs) && !isNaN(skipTs) && pageTs > skipTs) {
+                return { id: id, status: 'skipped', detail: '同步首页时间(' + syncTimeVal + ')晚于阈值，跳过' };
+              }
+            }
           }
 
           // 删降权标签
@@ -2409,8 +2418,25 @@
             }
           }
 
-          // 等加标签结果
-          if (_addTagPromise) { log.push(await _addTagPromise); }
+          // 等加标签结果（并发 fetch，串行写 DOM 避免竞态）
+          if (_addTagPromises.length) {
+            var tagResults = await Promise.all(_addTagPromises);
+            var okTags = [], failTags = [];
+            for (var tri = 0; tri < tagResults.length; tri++) {
+              var tr = tagResults[tri];
+              if (tr.ok) {
+                var tagObj = document.getElementById('acticle_binded_tag');
+                if (tagObj) {
+                  var tagIds = tagObj.value ? tagObj.value.split(',') : [];
+                  if (tagIds.indexOf(String(tr.tagId)) < 0) { tagIds.push(String(tr.tagId)); tagObj.value = tagIds.join(','); }
+                }
+                okTags.push(tr.tag + '(' + tr.tagId + ')');
+              } else { failTags.push(tr.tag + ':' + (tr.msg || '')); }
+            }
+            if (window.toolBox && typeof toolBox.bindedTagInit === 'function') toolBox.bindedTagInit();
+            if (okTags.length) log.push('加标签:成功[' + okTags.join(',') + ']');
+            if (failTags.length) log.push('加标签:失败[' + failTags.join(',') + ']');
+          }
 
           // 同步 UEditor
           try {
@@ -2463,21 +2489,26 @@
           if (!taskRaw) { bLog('无批量任务'); return; }
           var task;
           try { task = JSON.parse(taskRaw); } catch(e) { bLog('任务解析失败'); return; }
+          if (task._stopped) { bLog('任务已暂停，等待继续执行'); return; }
           var idMatch = location.pathname.match(/edit_youhui\/(\d+)/);
           var curId = idMatch ? idMatch[1] : '';
           if (!curId) { bLog('无法识别当前文章ID'); return; }
           bLog('处理 ' + (task.idx + 1) + '/' + task.ids.length + ' id=' + curId + ' skills=[' + task.skills.join(',') + ']');
           var r;
-          try { r = await processOne(curId, task.skills); }
+          try { r = await processOne(curId, task.skills, task.tags || [], task.syncSkipTime || ''); }
           catch(e) { r = { id: curId, status: 'error', detail: e.message }; }
           bLog(JSON.stringify(r));
           task.results.push(r);
           task.idx = (task.idx || 0) + 1;
           GM_setValue('tuopin_batch_skill_result', JSON.stringify(task.results));
-          // 下一篇
+          // 先把推进后的 idx 落盘（指向下一篇未处理），并保留存储里最新的 _stopped 标记
+          var latestRaw = GM_getValue('tuopin_batch_skill', '');
+          var latestTask = latestRaw ? JSON.parse(latestRaw) : null;
+          if (latestTask) { latestTask.idx = task.idx; latestTask.results = task.results; latestTask.startedAt = Date.now(); GM_setValue('tuopin_batch_skill', JSON.stringify(latestTask)); }
+          if (latestTask && latestTask._stopped) { bLog('执行已暂停，点继续执行恢复'); return; }
           if (task.idx < task.ids.length) {
             var nextId = task.ids[task.idx];
-            GM_setValue('tuopin_batch_skill', JSON.stringify(task));
+            GM_setValue('tuopin_batch_skill', JSON.stringify(latestTask || task));
             await sleep(50);
             window.onbeforeunload = null;
             location.href = 'http://youhui.bgm.smzdm.com/edit_youhui/' + nextId;
@@ -5310,7 +5341,15 @@
           + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="发现" style="accent-color:#ff7a00;"> 发现</label>'
           + '<label style="font-size:11px;color:#555;display:flex;align-items:center;gap:3px;cursor:pointer;"><input type="checkbox" class="co-batch-skill" value="加标签" style="accent-color:#ff7a00;"> 加标签</label>'
           + '</div>'
+          + '<div id="co-batch-sync-skip-wrap" style="display:none;margin-bottom:8px;">'
+          + '<div style="font-size:10px;color:#666;margin-bottom:3px;">同步首页时间晚于以下时间则跳过（选填）</div>'
+          + '<input id="co-batch-sync-skip-time" type="datetime-local" style="width:100%;padding:3px 4px;border:1px solid #e0e0e0;border-radius:4px;font-size:10px;box-sizing:border-box;">'
+          + '</div>'
+          + '<div id="co-batch-tag-wrap" style="display:none;margin-bottom:8px;">'
+          + '<input id="co-batch-tag-input" type="text" placeholder="标签名，多个用逗号分隔，如：今日必买,白菜党" style="width:100%;padding:5px 6px;font-size:11px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;">'
+          + '</div>'
           + '<button id="co-batch-run" style="width:100%;padding:7px;background:#ff7a00;color:#fff;border:none;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;">执行选中操作</button>'
+          + '<button id="co-batch-stop" style="width:100%;padding:7px;background:#fff;color:#ff4d4f;border:1px solid #ff4d4f;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;margin-top:4px;display:none;">停止执行</button>'
           + '<div id="co-batch-run-log" style="font-size:10px;color:#52c41a;margin-top:4px;min-height:14px;"></div>'
           + '<div id="co-batch-stats" style="font-size:10px;background:#fff;border:1px solid #ffe0b2;border-radius:3px;padding:4px 6px;margin-top:4px;line-height:1.7;display:none;"></div>'
           + '<div id="co-batch-history" style="margin-top:6px;"></div>'
@@ -5935,7 +5974,7 @@
               + list.slice().reverse().map(function(item, revIdx) {
                 var idx = list.length - 1 - revIdx;
                 var detailId = 'co-bh-detail-' + idx;
-                var summary = '✓' + item.success + ' ⊘' + (item.soldout + item.expired) + ' ✗' + item.failed;
+                var summary = '✓' + item.success + ' ⊘' + ((item.soldout || 0) + (item.expired || 0)) + (item.timeSkip ? ' ⏭' + item.timeSkip : '') + ' ✗' + item.failed;
                 var statusColor = item.failed > 0 ? '#ff4d4f' : '#52c41a';
                 return '<div style="border:1px solid #f0f0f0;border-radius:4px;margin-bottom:4px;overflow:hidden;">'
                   + '<div onclick="var d=document.getElementById(\'' + detailId + '\');d.style.display=d.style.display===\'none\'?\'block\':\'none\';" '
@@ -5945,9 +5984,10 @@
                   + '</div>'
                   + '<div id="' + detailId + '" style="display:none;padding:4px 6px;font-size:10px;line-height:1.7;border-top:1px solid #f0f0f0;">'
                   + '<div style="color:#52c41a;">✓ 成功 ' + item.success + (item.successIds && item.successIds.length ? '：' + item.successIds.join(', ') : '') + '</div>'
-                  + '<div style="color:#fa8c16;">⊘ 售罄 ' + item.soldout + ' / 过期 ' + item.expired
+                  + '<div style="color:#fa8c16;">⊘ 售罄 ' + (item.soldout||0) + ' / 过期 ' + (item.expired||0)
                     + ((item.soldoutIds && item.soldoutIds.length) || (item.expiredIds && item.expiredIds.length)
                       ? '：' + (item.soldoutIds || []).concat(item.expiredIds || []).join(', ') : '') + '</div>'
+                  + (item.timeSkip ? '<div style="color:#1890ff;">⏭ 时间跳过 ' + item.timeSkip + (item.timeSkipIds && item.timeSkipIds.length ? '：' + item.timeSkipIds.join(', ') : '') + '</div>' : '')
                   + '<div style="color:#ff4d4f;">✗ 失败 ' + item.failed + (item.failedIds && item.failedIds.length ? '：' + item.failedIds.join(', ') : '') + '</div>'
                   + (item.failedDetails && item.failedDetails.length ? '<div style="color:#ff4d4f;font-size:9px;margin-top:2px;">' + item.failedDetails.map(function(d){ return coEsc(d); }).join('<br>') + '</div>' : '')
                   + '</div>'
@@ -5961,6 +6001,29 @@
             if (list.length > 20) list = list.slice(list.length - 20);
             GM_setValue('tuopin_batch_history', JSON.stringify(list));
             renderBatchHistory();
+          }
+          // 把上一个未完成任务中已执行的结果归档进明细（启动新任务前调用）
+          function archivePrevTaskIfAny() {
+            var raw = GM_getValue('tuopin_batch_skill', '');
+            if (!raw) return;
+            var t;
+            try { t = JSON.parse(raw); } catch(e) { return; }
+            var results = t.results || [];
+            if (!results.length) return;  // 没执行过，无需归档
+            var now = new Date();
+            var timeStr = (now.getMonth()+1) + '月' + now.getDate() + '日' + now.getHours() + '点' + String(now.getMinutes()).padStart(2,'0') + '分(中断归档)';
+            var histItem = { time: timeStr, skills: (t.skills || []).join('/'), total: (t.ids || []).length, success: 0, soldout: 0, expired: 0, timeSkip: 0, failed: 0, successIds: [], soldoutIds: [], expiredIds: [], timeSkipIds: [], failedIds: [], failedDetails: [] };
+            results.forEach(function(r) {
+              var s = r.status, d = (r.detail || '');
+              if (s === 'success') { histItem.success++; histItem.successIds.push(r.id); }
+              else if (s === 'skipped') {
+                if (d.indexOf('同步首页时间') >= 0) { histItem.timeSkip++; histItem.timeSkipIds.push(r.id); }
+                else if (d.indexOf('售罄') >= 0) { histItem.soldout++; histItem.soldoutIds.push(r.id); }
+                else { histItem.expired++; histItem.expiredIds.push(r.id); }
+              } else { histItem.failed++; histItem.failedIds.push(r.id); histItem.failedDetails.push(r.id + ': ' + d); }
+            });
+            saveBatchHistory(histItem);
+            batchRunLog('已将上一任务 ' + results.length + ' 篇结果归档进明细');
           }
           function batchLog(msg, color) {
             var el = document.getElementById('co-batch-log');
@@ -6076,35 +6139,62 @@
           function runSelected() {
             var skills = Array.prototype.slice.call(document.querySelectorAll('.co-batch-skill:checked')).map(function(cb){ return cb.value; });
             if (!skills.length) { batchRunLog('请勾选至少一个操作'); return; }
+            // 启动新任务前，把上一个未完成任务已执行的结果归档进明细
+            archivePrevTaskIfAny();
+            // 清除上一个任务的残留，开启全新一轮
+            GM_setValue('tuopin_batch_skill', '');
+            GM_setValue('tuopin_batch_skill_result', '');
+            if (_batchPollItv) { clearInterval(_batchPollItv); _batchPollItv = null; }
+            var tags = [];
+            if (skills.indexOf('加标签') >= 0) {
+              var tagInput = document.getElementById('co-batch-tag-input');
+              var tagRaw = tagInput ? (tagInput.value || '').trim() : '';
+              tags = tagRaw ? tagRaw.split(/[,，]/).map(function(s){ return s.trim(); }).filter(Boolean) : [];
+              if (!tags.length) { batchRunLog('勾选加标签后请填写标签名'); if (tagInput) { tagInput.style.borderColor = '#ff4d4f'; tagInput.focus(); } return; }
+            }
+            var syncSkipTimeEl = document.getElementById('co-batch-sync-skip-time');
+            var syncSkipTime = syncSkipTimeEl ? (syncSkipTimeEl.value || '') : '';
             var runBtn = document.getElementById('co-batch-run');
             if (runBtn) { runBtn.disabled = true; runBtn.textContent = '执行中...'; }
             if (!_batchResults.length) {
               batchRunLog('先查询文章...');
               runBatchQuery(function(ok) {
                 if (!ok || !_batchResults.length) { batchRunLog(ok ? '查询结果为空' : '查询失败'); if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; } return; }
-                startBatchSkill(skills, runBtn);
+                startBatchSkill(skills, runBtn, tags, syncSkipTime);
               });
             } else {
-              startBatchSkill(skills, runBtn);
+              startBatchSkill(skills, runBtn, tags, syncSkipTime);
             }
           }
-          function startBatchSkill(skills, runBtn) {
+          function startBatchSkill(skills, runBtn, tags, syncSkipTime) {
             var ids = _batchResults.map(function(x){ return x.articleId; }).filter(Boolean);
             if (!ids.length) { batchRunLog('无有效文章ID'); if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; } return; }
-            GM_setValue('tuopin_batch_skill', JSON.stringify({ skills: skills, ids: ids, idx: 0, results: [], startedAt: Date.now() }));
+            GM_setValue('tuopin_batch_skill', JSON.stringify({ skills: skills, ids: ids, idx: 0, results: [], startedAt: Date.now(), tags: tags || [], syncSkipTime: syncSkipTime || '' }));
             GM_setValue('tuopin_batch_skill_result', '');
             // 记录本次执行时间和操作
             var now = new Date();
             var timeStr = (now.getMonth()+1) + '月' + now.getDate() + '日' + now.getHours() + '点' + String(now.getMinutes()).padStart(2,'0') + '分';
-            var histItem = { time: timeStr, skills: skills.join('/'), total: ids.length, success: 0, soldout: 0, expired: 0, failed: 0, successIds: [], soldoutIds: [], expiredIds: [], failedIds: [], failedDetails: [] };
+            var histItem = { time: timeStr, skills: skills.join('/'), total: ids.length, success: 0, soldout: 0, expired: 0, timeSkip: 0, failed: 0, successIds: [], soldoutIds: [], expiredIds: [], timeSkipIds: [], failedIds: [], failedDetails: [] };
             batchRunLog('已启动：' + ids.length + '篇 × [' + skills.join('/') + ']');
             var firstId = ids[0];
             GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + firstId, { active: true, insert: true });
             var statBox = document.getElementById('co-batch-stats');
             if (statBox) statBox.style.display = 'block';
-            var total = ids.length;
+            var stopBtn = document.getElementById('co-batch-stop');
+            if (runBtn) { runBtn.disabled = true; runBtn.textContent = '执行中...'; }
+            if (stopBtn) stopBtn.style.display = 'block';
+            startPolling(ids.length, runBtn, histItem);
+          }
+          var _batchPollItv = null;
+          // 启动/恢复面板轮询，total=本次总数，runBtn/histItem 可为 null（恢复场景）
+          function startPolling(total, runBtn, histItem) {
+            if (_batchPollItv) { clearInterval(_batchPollItv); _batchPollItv = null; }
             var pollN = 0;
-            var pollItv = setInterval(function() {
+            var stopBtn = document.getElementById('co-batch-stop');
+            var statBox = document.getElementById('co-batch-stats');
+            if (statBox) statBox.style.display = 'block';
+            if (stopBtn) stopBtn.style.display = 'block';
+            _batchPollItv = setInterval(function() {
               pollN++;
               var raw = GM_getValue('tuopin_batch_skill_result', '');
               var results = [];
@@ -6112,19 +6202,22 @@
               renderBatchStats(results, total);
               var task = GM_getValue('tuopin_batch_skill', '');
               if (!task || pollN > 600) {
-                clearInterval(pollItv);
-                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '执行选中操作'; }
-                batchRunLog('执行结束');
-                // 写入历史
-                results.forEach(function(r) {
-                  var s = r.status, d = (r.detail || '');
-                  if (s === 'success') { histItem.success++; histItem.successIds.push(r.id); }
-                  else if (s === 'skipped') {
-                    if (d.indexOf('售罄') >= 0) { histItem.soldout++; histItem.soldoutIds.push(r.id); }
-                    else { histItem.expired++; histItem.expiredIds.push(r.id); }
-                  } else { histItem.failed++; histItem.failedIds.push(r.id); histItem.failedDetails.push(r.id + ': ' + d); }
-                });
-                saveBatchHistory(histItem);
+                clearInterval(_batchPollItv); _batchPollItv = null;
+                if (stopBtn) stopBtn.style.display = 'none';
+                batchRunLog(!task && pollN <= 600 ? '已停止' : '执行结束');
+                if (histItem) {
+                  results.forEach(function(r) {
+                    var s = r.status, d = (r.detail || '');
+                    if (s === 'success') { histItem.success++; histItem.successIds.push(r.id); }
+                    else if (s === 'skipped') {
+                      if (d.indexOf('同步首页时间') >= 0) { histItem.timeSkip++; histItem.timeSkipIds.push(r.id); }
+                      else if (d.indexOf('售罄') >= 0) { histItem.soldout++; histItem.soldoutIds.push(r.id); }
+                      else { histItem.expired++; histItem.expiredIds.push(r.id); }
+                    } else { histItem.failed++; histItem.failedIds.push(r.id); histItem.failedDetails.push(r.id + ': ' + d); }
+                  });
+                  saveBatchHistory(histItem);
+                }
+                syncRunBtn();
               }
             }, 2000);
           }
@@ -6132,14 +6225,15 @@
             var box = document.getElementById('co-batch-stats');
             if (!box) return;
             var done = results.length;
-            var success = 0, soldout = 0, expired = 0, failed = 0;
-            var failedIds = [];
+            var success = 0, soldout = 0, expired = 0, timeSkip = 0, failed = 0;
+            var failedIds = [], timeSkipIds = [];
             var failedDetails = [];
             results.forEach(function(r) {
               var s = r.status, d = (r.detail || '');
               if (s === 'success') success++;
               else if (s === 'skipped') {
-                if (d.indexOf('售罄') >= 0) soldout++;
+                if (d.indexOf('同步首页时间') >= 0) { timeSkip++; timeSkipIds.push(r.id); }
+                else if (d.indexOf('售罄') >= 0) soldout++;
                 else if (d.indexOf('过期') >= 0) expired++;
                 else { soldout++; }
               } else { failed++; failedIds.push(r.id); failedDetails.push(r.id + ': ' + d); }
@@ -6147,6 +6241,7 @@
             var html = '<div>进度：' + done + '/' + total + '</div>'
               + '<div style="color:#52c41a;">✓ 成功 ' + success + '</div>'
               + '<div style="color:#fa8c16;">⊘ 售罄 ' + soldout + ' / 过期 ' + expired + '</div>'
+              + (timeSkip > 0 ? '<div style="color:#1890ff;">⏭ 时间跳过 ' + timeSkip + (timeSkipIds.length ? '：' + timeSkipIds.join(', ') : '') + '</div>' : '')
               + '<div style="color:#ff4d4f;">✗ 失败 ' + failed + (failedIds.length ? '：' + failedIds.join(', ') : '') + '</div>'
               + (failedDetails.length ? '<div style="color:#ff4d4f;font-size:9px;margin-top:2px;">' + failedDetails.map(function(d){ return coEsc(d); }).join('<br>') + '</div>' : '');
             box.innerHTML = html;
@@ -6156,6 +6251,91 @@
           var manageArea = document.getElementById('co-batch-manage-area');
           // 初始化渲染历史明细
           renderBatchHistory();
+          // 停止按钮
+          var stopBtnEl = document.getElementById('co-batch-stop');
+          if (stopBtnEl) {
+            stopBtnEl.onclick = function() {
+              // 不清除任务数据，保留断点，只停止编辑 tab 的自动跳转
+              // 向 GM 写入停止标记，batchSkillRunner 检测到后不再开新 tab
+              var raw = GM_getValue('tuopin_batch_skill', '');
+              if (raw) {
+                try {
+                  var t = JSON.parse(raw);
+                  t._stopped = true;
+                  GM_setValue('tuopin_batch_skill', JSON.stringify(t));
+                } catch(e) {}
+              }
+              if (_batchPollItv) { clearInterval(_batchPollItv); _batchPollItv = null; }
+              batchRunLog('已暂停，可点继续执行恢复');
+              syncRunBtn();
+            };
+          }
+          function resumeFromStopped() {
+            var raw = GM_getValue('tuopin_batch_skill', '');
+            if (!raw) { batchRunLog('任务已清除'); syncRunBtn(); return; }
+            var t;
+            try { t = JSON.parse(raw); } catch(e) { return; }
+            // 跳过 results 中已处理过的 id，定位到下一篇未处理的
+            var doneIds = {};
+            (t.results || []).forEach(function(r){ doneIds[r.id] = true; });
+            while (t.idx < t.ids.length && doneIds[t.ids[t.idx]]) { t.idx++; }
+            // 清除停止标记，重置 30 分钟生效窗口
+            delete t._stopped;
+            t.startedAt = Date.now();
+            GM_setValue('tuopin_batch_skill', JSON.stringify(t));
+            if (t.idx >= t.ids.length) {
+              batchRunLog('已全部处理过，无需继续');
+              GM_setValue('tuopin_batch_skill', '');
+              syncRunBtn();
+              return;
+            }
+            var nextId = t.ids[t.idx];
+            batchRunLog('继续执行，从第' + (t.idx+1) + '篇 id=' + nextId + ' 开始');
+            var rBtnEl = document.getElementById('co-batch-run');
+            if (rBtnEl) { rBtnEl.disabled = true; rBtnEl.textContent = '执行中...'; rBtnEl.onclick = null; }
+            var stopBtnEl2 = document.getElementById('co-batch-stop');
+            if (stopBtnEl2) stopBtnEl2.style.display = 'block';
+            GM_openInTab('http://youhui.bgm.smzdm.com/edit_youhui/' + nextId, { active: true, insert: true });
+            startPolling(t.ids.length, rBtnEl, null);
+          }
+          // 统一控制执行按钮：勾选了 skill → 开始执行(新任务)；未勾选且有未完成任务 → 继续执行；否则 执行选中操作
+          function syncRunBtn() {
+            var rBtnEl = document.getElementById('co-batch-run');
+            if (!rBtnEl) return;
+            if (rBtnEl.textContent === '执行中...') return;  // 执行中不覆盖
+            var stopBtnEl = document.getElementById('co-batch-stop');
+            var anyChecked = false;
+            var cbs = document.querySelectorAll('.co-batch-skill');
+            for (var i = 0; i < cbs.length; i++) { if (cbs[i].checked) { anyChecked = true; break; } }
+            if (anyChecked) {
+              // 勾选了 → 新一轮筛选执行
+              rBtnEl.disabled = false;
+              rBtnEl.textContent = '开始执行';
+              rBtnEl.onclick = runSelected;
+              if (stopBtnEl) stopBtnEl.style.display = 'none';
+            } else {
+              // 未勾选 → 看是否有未完成任务
+              var raw = GM_getValue('tuopin_batch_skill', '');
+              var hasTask = false, done = 0, total = 0;
+              if (raw) {
+                try {
+                  var t = JSON.parse(raw);
+                  if (t && t.ids && t.idx != null && t.idx < t.ids.length) { hasTask = true; done = t.idx; total = t.ids.length; }
+                } catch(e) {}
+              }
+              if (hasTask) {
+                rBtnEl.disabled = false;
+                rBtnEl.textContent = '继续执行(' + done + '/' + total + ')';
+                rBtnEl.onclick = resumeFromStopped;
+              } else {
+                rBtnEl.disabled = false;
+                rBtnEl.textContent = '执行选中操作';
+                rBtnEl.onclick = runSelected;
+                if (stopBtnEl) stopBtnEl.style.display = 'none';
+              }
+            }
+          }
+          syncRunBtn();
           if (manageToggle && manageArea) {
             manageToggle.onclick = function() {
               var open = manageArea.style.display !== 'none';
@@ -6207,9 +6387,31 @@
           wireBatchAdd('co-batch-cate2', 'tuopin_batch_cate2', 'co-batch-cate2-input', 'co-batch-cate2-add', true);
           wireBatchAdd('co-batch-mall', 'tuopin_batch_mall', 'co-batch-mall-input', 'co-batch-mall-add', true);
           wireBatchAdd('co-batch-channel', 'tuopin_batch_channel', 'co-batch-channel-input', 'co-batch-channel-add', true);
-          // 执行按钮（id 唯一，无重复占位）
-          var rBtn = document.getElementById('co-batch-run');
-          if (rBtn) rBtn.onclick = runSelected;
+          // 执行按钮文字/行为由 syncRunBtn() 统一管理（初始已调用），下方 checkbox 切换时再调用
+          // 加标签勾选时显示标签输入框
+          var tagCbs = document.querySelectorAll('.co-batch-skill');
+          var tagWrap = document.getElementById('co-batch-tag-wrap');
+          function syncTagWrap() {
+            var checked = false;
+            for (var ci = 0; ci < tagCbs.length; ci++) { if (tagCbs[ci].value === '加标签' && tagCbs[ci].checked) { checked = true; break; } }
+            if (tagWrap) tagWrap.style.display = checked ? 'block' : 'none';
+          }
+          for (var ti = 0; ti < tagCbs.length; ti++) {
+            tagCbs[ti].addEventListener('change', syncRunBtn);  // 勾选状态变化 → 重算按钮
+            if (tagCbs[ti].value === '加标签') { tagCbs[ti].addEventListener('change', syncTagWrap); }
+          }
+          syncTagWrap();
+          // 回捞勾选时显示同步首页时间跳过输入框
+          var syncSkipWrap = document.getElementById('co-batch-sync-skip-wrap');
+          function syncSkipWrapToggle() {
+            var checked = false;
+            for (var ci = 0; ci < tagCbs.length; ci++) { if (tagCbs[ci].value === '回捞' && tagCbs[ci].checked) { checked = true; break; } }
+            if (syncSkipWrap) syncSkipWrap.style.display = checked ? 'flex' : 'none';
+          }
+          for (var ti2 = 0; ti2 < tagCbs.length; ti2++) {
+            if (tagCbs[ti2].value === '回捞') { tagCbs[ti2].addEventListener('change', syncSkipWrapToggle); }
+          }
+          syncSkipWrapToggle();
         })();
 
         // ── 社群补贴 tab 逻辑 ──
