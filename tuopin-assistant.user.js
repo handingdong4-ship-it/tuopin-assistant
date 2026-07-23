@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         大淘客拓品助手
 // @namespace    https://www.dataoke.com/
-// @version      5.8.3
+// @version      5.8.4
 // @downloadURL  https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @updateURL    https://raw.githubusercontent.com/handingdong4-ship-it/tuopin-assistant/main/tuopin-assistant.user.js
 // @description  在大淘客选品库页面，商品卡片左上角显示复选框，勾选即选中，配合浮动工具栏获取商品详情及优惠文案，支持一键发布到SMZDM
@@ -6554,8 +6554,18 @@
               if (inp) inp.value = '';
             };
           }
-          if (!batchListGet('tuopin_batch_channel').length) {
-            batchListSave('tuopin_batch_channel', ['发现', '国内优惠', '个人主页']);
+          {
+            // 频道默认值；迁移老数据「个人主页」→「个人中心」
+            var chList = batchListGet('tuopin_batch_channel');
+            if (!chList.length) {
+              batchListSave('tuopin_batch_channel', ['发现', '国内优惠', '个人中心']);
+            } else {
+              var migrated = false;
+              for (var ci = 0; ci < chList.length; ci++) {
+                if (chList[ci] === '个人主页') { chList[ci] = '个人中心'; migrated = true; }
+              }
+              if (migrated) batchListSave('tuopin_batch_channel', chList);
+            }
           }
           batchRefreshSel('co-batch-cate1', 'tuopin_batch_cate1', true);
           batchRefreshSel('co-batch-cate2', 'tuopin_batch_cate2', true);
